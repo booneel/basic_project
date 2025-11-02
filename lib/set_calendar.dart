@@ -1,6 +1,13 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/cupertino.dart';
+import 'package:intl/intl.dart';
+import 'package:intl/date_symbol_data_local.dart';
+import 'dart:async';
 
-void main() {
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  // 한국 로케일 초기화
+  await initializeDateFormatting('ko_KR', null);
   runApp(const MyApp());
 }
 
@@ -21,7 +28,7 @@ class MyApp extends StatelessWidget {
   }
 }
 
-// 1. 일정 데이터 모델 정의 (Color 속성 추가)
+// 1. 일정 데이터 모델 정의
 class CalendarScheduleItem {
   final String id;
   String title;
@@ -52,30 +59,21 @@ class _CalendarScreenState extends State<CalendarScreen> {
     Colors.deepPurple,
   ];
 
-  // 스케줄 데이터 맵: Key는 날짜 문자열 (YYYY-MM-DD), Value는 List<일정 항목>
+  // 스케줄 데이터 맵
   late Map<String, List<CalendarScheduleItem>> _schedules;
 
   @override
   void initState() {
     super.initState();
-    _currentDate = DateTime(2025, 7, 1);
-    _selectedDate = DateTime(2025, 7, 17);
 
-    // 초기 더미 데이터 (7월 17일에 두 개의 다른 색상 스케줄 추가)
+    final DateTime now = DateTime.now();
+    _currentDate = DateTime(now.year, now.month, 1); // 현재 달의 1일
+    _selectedDate = DateTime(now.year, now.month, now.day); // 오늘 날짜
+
+    final String todayKey = '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
+
     _schedules = {
-      '2025-07-17': [
-        CalendarScheduleItem(
-          id: '1',
-          title: '아르바이트',
-          time: '14:00-17:00',
-          color: _scheduleColors[0], // Green
-        ),
-        CalendarScheduleItem(
-          id: '2',
-          title: '팀 회의',
-          time: '18:00-19:00',
-          color: _scheduleColors[1], // Blue
-        ),
+      todayKey: [
       ],
     };
   }
@@ -84,9 +82,8 @@ class _CalendarScreenState extends State<CalendarScreen> {
   // 2. 일정 관리 함수
   // ===========================================
 
-  // 일정 추가 (색상 순환 로직 추가)
+  // 일정 추가
   void _addSchedule(String dateKey, String title, String time) {
-    // 해당 날짜에 이미 등록된 스케줄 개수를 확인하여 다음 색상을 순환 선택
     final existingCount = _schedules[dateKey]?.length ?? 0;
     final colorIndex = existingCount % _scheduleColors.length;
 
@@ -95,7 +92,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
       id: newId,
       title: title,
       time: time,
-      color: _scheduleColors[colorIndex], // 새로운 색상 할당
+      color: _scheduleColors[colorIndex],
     );
 
     setState(() {
@@ -117,7 +114,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
     });
   }
 
-  // 시간 형식 변환 (TimeOfDay -> HH:MM)
+  // 시간 형식 변환
   String _formatTimeOfDay(TimeOfDay? time) {
     if (time == null) return '선택';
     final hour = time.hour.toString().padLeft(2, '0');
@@ -125,7 +122,46 @@ class _CalendarScreenState extends State<CalendarScreen> {
     return '$hour:$minute';
   }
 
-  // 일정 추가 다이얼로그 표시 (Time Picker 포함)
+  // CupertinoTimerPicker 헬퍼 함수
+  Future<TimeOfDay?> _showCupertinoPicker(BuildContext context, TimeOfDay initialTime) {
+    TimeOfDay selectedTime = initialTime;
+
+    return showModalBottomSheet<TimeOfDay>(
+      context: context,
+      builder: (BuildContext builder) {
+        return Container(
+          height: 300,
+          color: Colors.white,
+          child: Column(
+            children: [
+              Expanded(
+                child: MediaQuery(
+                  data: MediaQuery.of(context).copyWith(alwaysUse24HourFormat: true),
+                  child: CupertinoTimerPicker(
+                    mode: CupertinoTimerPickerMode.hm,
+                    initialTimerDuration: Duration(hours: initialTime.hour, minutes: initialTime.minute),
+                    minuteInterval: 1,
+                    onTimerDurationChanged: (duration) {
+                      selectedTime = TimeOfDay(hour: duration.inHours, minute: duration.inMinutes % 60);
+                    },
+                  ),
+                ),
+              ),
+              TextButton(
+                child: Text('선택 완료', style: TextStyle(color: Theme.of(context).primaryColor, fontWeight: FontWeight.bold)),
+                onPressed: () {
+                  Navigator.of(context).pop(selectedTime);
+                },
+              )
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+
+  // 일정 추가 다이얼로그 (SingleChildScrollView 추가됨)
   void _showAddScheduleDialog() {
     String title = '';
     TimeOfDay? startTime;
@@ -138,52 +174,49 @@ class _CalendarScreenState extends State<CalendarScreen> {
           builder: (context, setStateInDialog) {
             return AlertDialog(
               title: const Text('새 일정 추가'),
-              content: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: <Widget>[
-                  TextField(
-                    decoration: const InputDecoration(labelText: '일정 제목'),
-                    onChanged: (value) => title = value,
-                  ),
-                  const SizedBox(height: 15),
-                  // 시작 시간 Time Picker
-                  ListTile(
-                    title: const Text('시작 시간'),
-                    trailing: Text(_formatTimeOfDay(startTime)),
-                    onTap: () async {
-                      final TimeOfDay? pickedTime = await showTimePicker(
-                        context: context,
-                        initialTime: startTime ?? TimeOfDay.now(),
-                        builder: (context, child) => MediaQuery(
-                          data: MediaQuery.of(context).copyWith(alwaysUse24HourFormat: true),
-                          child: child!,
-                        ),
-                      );
-                      if (pickedTime != null) {
-                        setStateInDialog(() => startTime = pickedTime);
-                      }
-                    },
-                  ),
-                  // 종료 시간 Time Picker
-                  ListTile(
-                    title: const Text('종료 시간'),
-                    trailing: Text(_formatTimeOfDay(endTime)),
-                    onTap: () async {
-                      final TimeOfDay? pickedTime = await showTimePicker(
-                        context: context,
-                        initialTime: endTime ?? startTime ?? TimeOfDay.now(),
-                        builder: (context, child) => MediaQuery(
-                          data: MediaQuery.of(context).copyWith(alwaysUse24HourFormat: true),
-                          child: child!,
-                        ),
-                      );
-                      if (pickedTime != null) {
-                        setStateInDialog(() => endTime = pickedTime);
-                      }
-                    },
-                  ),
-                ],
+
+              // 키보드 오버플로우 방지를 위해 SingleChildScrollView 추가
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: <Widget>[
+                    TextField(
+                      decoration: const InputDecoration(labelText: '일정 제목'),
+                      onChanged: (value) => title = value,
+                    ),
+                    const SizedBox(height: 15),
+                    // 시작 시간 선택
+                    ListTile(
+                      title: const Text('시작 시간'),
+                      trailing: Text(_formatTimeOfDay(startTime)),
+                      onTap: () async {
+                        final TimeOfDay? pickedTime = await _showCupertinoPicker(
+                          context,
+                          startTime ?? TimeOfDay.now(),
+                        );
+                        if (pickedTime != null) {
+                          setStateInDialog(() => startTime = pickedTime);
+                        }
+                      },
+                    ),
+                    // 종료 시간 선택
+                    ListTile(
+                      title: const Text('종료 시간'),
+                      trailing: Text(_formatTimeOfDay(endTime)),
+                      onTap: () async {
+                        final TimeOfDay? pickedTime = await _showCupertinoPicker(
+                          context,
+                          endTime ?? startTime ?? TimeOfDay.now(),
+                        );
+                        if (pickedTime != null) {
+                          setStateInDialog(() => endTime = pickedTime);
+                        }
+                      },
+                    ),
+                  ],
+                ),
               ),
+
               actions: <Widget>[
                 TextButton(
                   child: const Text('취소'),
@@ -214,20 +247,20 @@ class _CalendarScreenState extends State<CalendarScreen> {
   }
 
   // ===========================================
-  // 3. 달력 제어 함수 (월 변경 시 1일로 설정 유지)
+  // 3. 달력 제어 함수
   // ===========================================
 
   void _goToPreviousMonth() {
     setState(() {
       _currentDate = DateTime(_currentDate.year, _currentDate.month - 1, 1);
-      _selectedDate = _currentDate; // 새 달의 1일로 선택
+      _selectedDate = _currentDate;
     });
   }
 
   void _goToNextMonth() {
     setState(() {
       _currentDate = DateTime(_currentDate.year, _currentDate.month + 1, 1);
-      _selectedDate = _currentDate; // 새 달의 1일로 선택
+      _selectedDate = _currentDate;
     });
   }
 
@@ -239,10 +272,10 @@ class _CalendarScreenState extends State<CalendarScreen> {
 
 
   // ===========================================
-  // 4. UI 빌드 위젯 (달력 점 표시 로직 변경)
+  // 4. UI 빌드 위젯
   // ===========================================
 
-  // 달력 날짜 그리드 (스케줄 개수/색상에 따른 점 표시 로직 변경)
+  // 달력 날짜 그리드
   Widget _buildDateGrid() {
     final DateTime firstDayOfMonth = DateTime(_currentDate.year, _currentDate.month, 1);
     final int daysInMonth = DateTime(_currentDate.year, _currentDate.month + 1, 0).day;
@@ -283,7 +316,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
               date.day == _selectedDate.day;
 
           final dateKey = '${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
-          final schedulesForDay = _schedules[dateKey] ?? []; // 해당 날짜의 스케줄 리스트
+          final schedulesForDay = _schedules[dateKey] ?? [];
 
           return Center(
             child: GestureDetector(
@@ -293,9 +326,9 @@ class _CalendarScreenState extends State<CalendarScreen> {
                 height: 35,
                 decoration: isSelected
                     ? BoxDecoration(
-                  color: Theme.of(context).primaryColor?.withOpacity(0.15),
+                  color: Theme.of(context).primaryColor.withOpacity(0.15),
                   shape: BoxShape.circle,
-                  border: Border.all(color: Theme.of(context).primaryColor!, width: 1.5),
+                  border: Border.all(color: Theme.of(context).primaryColor, width: 1.5),
                 )
                     : null,
                 child: Column(
@@ -311,20 +344,17 @@ class _CalendarScreenState extends State<CalendarScreen> {
                             : Colors.black,
                       ),
                     ),
-                    // 🚨 스케줄 개수만큼 점 표시
                     if (schedulesForDay.isNotEmpty)
                       Padding(
                         padding: const EdgeInsets.only(top: 3.0),
                         child: Row(
                           mainAxisAlignment: MainAxisAlignment.center,
-                          // 최대 3개까지만 점을 표시하여 화면 혼잡을 방지 (선택 사항)
                           children: schedulesForDay.take(3).map((schedule) {
                             return Container(
                               margin: const EdgeInsets.symmetric(horizontal: 1),
                               width: 4,
                               height: 4,
                               decoration: BoxDecoration(
-                                // 선택된 날짜는 메인 색상, 아니면 스케줄별 색상
                                 color: isSelected ? Theme.of(context).primaryColor : schedule.color,
                                 shape: BoxShape.circle,
                               ),
@@ -342,7 +372,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
     );
   }
 
-  // 선택된 날짜의 일정 목록을 표시하는 항목 빌더 (시간 텍스트 색상 변경)
+  // 선택된 날짜의 일정 목록을 표시하는 항목 빌더
   Widget _buildScheduleDetailItem(CalendarScheduleItem item) {
     final dateKey = '${_selectedDate.year}-${_selectedDate.month.toString().padLeft(2, '0')}-${_selectedDate.day.toString().padLeft(2, '0')}';
 
@@ -372,7 +402,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
                 children: [
                   Text(
                     item.time,
-                    style: TextStyle( // 🚨 일정 색상으로 시간 텍스트 색상 변경
+                    style: TextStyle(
                       color: item.color,
                       fontWeight: FontWeight.bold,
                       fontSize: 14,
@@ -392,8 +422,6 @@ class _CalendarScreenState extends State<CalendarScreen> {
               const SizedBox(width: 40),
             ],
           ),
-
-          // 일정 카드 오른쪽 위 삭제 버튼 (휴지통 아이콘)
           Positioned(
             top: -10,
             right: -10,
@@ -410,7 +438,9 @@ class _CalendarScreenState extends State<CalendarScreen> {
   // 선택된 날짜의 일정 목록 표시
   Widget _buildScheduleList() {
     final dateKey = '${_selectedDate.year}-${_selectedDate.month.toString().padLeft(2, '0')}-${_selectedDate.day.toString().padLeft(2, '0')}';
-    final schedules = _schedules[dateKey] ?? [];
+
+    // 스케줄 리스트를 가져와서 복사본을 만듭니다. (원본 맵을 직접 정렬하지 않기 위해)
+    final schedules = List<CalendarScheduleItem>.from(_schedules[dateKey] ?? []);
 
     if (schedules.isEmpty) {
       return const Padding(
@@ -422,6 +452,16 @@ class _CalendarScreenState extends State<CalendarScreen> {
       );
     }
 
+    // 🚨 일정 시작 시간 기준으로 정렬
+    schedules.sort((a, b) {
+      // '14:00-17:00' 문자열에서 시작 시간 '14:00'만 추출
+      final timeA = a.time.split('-')[0];
+      final timeB = b.time.split('-')[0];
+
+      // 시간을 문자열로 비교하여 정렬합니다. (예: "09:00" < "14:00")
+      return timeA.compareTo(timeB);
+    });
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: schedules.map((item) => _buildScheduleDetailItem(item)).toList(),
@@ -431,9 +471,10 @@ class _CalendarScreenState extends State<CalendarScreen> {
 
   @override
   Widget build(BuildContext context) {
-    // 나머지 UI 코드는 이전과 동일하게 유지
     return Scaffold(
       backgroundColor: Colors.white,
+      // 🚨 오버플로우/키보드 문제 해결을 위한 속성 추가
+      resizeToAvoidBottomInset: false,
       body: Column(
         children: <Widget>[
           const SizedBox(height: 60),
@@ -451,7 +492,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
           const SizedBox(height: 20),
           _buildWeekdays(),
           const SizedBox(height: 10),
-          _buildDateGrid(), // 업데이트된 달력 그리드
+          _buildDateGrid(),
           Expanded(
             child: SingleChildScrollView(
               padding: const EdgeInsets.symmetric(horizontal: 16.0),
@@ -467,7 +508,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
                     ),
                     margin: const EdgeInsets.only(top: 20, bottom: 20),
                   ),
-                  _buildScheduleList(), // 업데이트된 일정 목록
+                  _buildScheduleList(),
                   Padding(
                     padding: const EdgeInsets.symmetric(vertical: 20),
                     child: GestureDetector(
@@ -485,7 +526,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
           ),
         ],
       ),
-      // 하단 네비게이션 바는 생략
+      // 하단 네비게이션 바
       bottomNavigationBar: BottomNavigationBar(
         items: <BottomNavigationBarItem>[
           _buildNavItem(Icons.calendar_today, 'Schedule', true),
@@ -504,7 +545,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
     );
   }
 
-  // 달력 헤더 (이전과 동일)
+  // 달력 헤더
   Widget _buildCalendarHeader() {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16.0),
@@ -552,7 +593,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
     );
   }
 
-  // 달력 요일 표시 (이전과 동일)
+  // 달력 요일 표시
   Widget _buildWeekdays() {
     const List<String> weekdays = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
     return Padding(
@@ -577,14 +618,14 @@ class _CalendarScreenState extends State<CalendarScreen> {
     );
   }
 
-  // 하단 네비게이션 바 아이템 (이전과 동일)
+  // 하단 네비게이션 바 아이템
   BottomNavigationBarItem _buildNavItem(IconData icon, String label, bool isSelected) {
     return BottomNavigationBarItem(
       icon: Container(
         padding: isSelected ? const EdgeInsets.symmetric(horizontal: 20, vertical: 8) : null,
         decoration: isSelected
             ? BoxDecoration(
-          color: Theme.of(context).primaryColor?.withOpacity(0.1),
+          color: Theme.of(context).primaryColor.withOpacity(0.1),
           borderRadius: BorderRadius.circular(20),
         )
             : null,
