@@ -526,22 +526,6 @@ class _CalendarScreenState extends State<CalendarScreen> {
           ),
         ],
       ),
-      // 하단 네비게이션 바
-      bottomNavigationBar: BottomNavigationBar(
-        items: <BottomNavigationBarItem>[
-          _buildNavItem(Icons.calendar_today, 'Schedule', true),
-          _buildNavItem(Icons.home, 'Home', false),
-          _buildNavItem(Icons.person, 'profile', false),
-        ],
-        currentIndex: 0,
-        selectedItemColor: Theme.of(context).primaryColor,
-        unselectedItemColor: Colors.grey,
-        showSelectedLabels: true,
-        showUnselectedLabels: true,
-        backgroundColor: Colors.white,
-        elevation: 0,
-        type: BottomNavigationBarType.fixed,
-      ),
     );
   }
 
@@ -615,26 +599,6 @@ class _CalendarScreenState extends State<CalendarScreen> {
           );
         }).toList(),
       ),
-    );
-  }
-
-  // 하단 네비게이션 바 아이템
-  BottomNavigationBarItem _buildNavItem(IconData icon, String label, bool isSelected) {
-    return BottomNavigationBarItem(
-      icon: Container(
-        padding: isSelected ? const EdgeInsets.symmetric(horizontal: 20, vertical: 8) : null,
-        decoration: isSelected
-            ? BoxDecoration(
-          color: Theme.of(context).primaryColor.withOpacity(0.1),
-          borderRadius: BorderRadius.circular(20),
-        )
-            : null,
-        child: Icon(
-          icon,
-          color: isSelected ? Theme.of(context).primaryColor : Colors.grey[500],
-        ),
-      ),
-      label: label,
     );
   }
 }
