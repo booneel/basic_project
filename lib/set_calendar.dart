@@ -3,8 +3,11 @@ import 'package:flutter/cupertino.dart';
 import 'package:intl/intl.dart';
 import 'package:intl/date_symbol_data_local.dart';
 import 'dart:async';
+import 'main.dart';
+import 'profile.dart';
 
-void main() async {
+
+/*void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   // 한국 로케일 초기화
   await initializeDateFormatting('ko_KR', null);
@@ -26,7 +29,7 @@ class MyApp extends StatelessWidget {
       home: const CalendarScreen(),
     );
   }
-}
+}*/
 
 // 1. 일정 데이터 모델 정의
 class CalendarScheduleItem {
@@ -48,6 +51,7 @@ class CalendarScreen extends StatefulWidget {
 class _CalendarScreenState extends State<CalendarScreen> {
   late DateTime _currentDate; // 현재 달력에 표시되는 월/년도
   late DateTime _selectedDate; // 사용자가 선택한 날짜
+  int _selectedIndex = 0;
 
   // 1-1. 스케줄에 사용할 색상 리스트 정의
   final List<Color> _scheduleColors = const [
@@ -77,6 +81,30 @@ class _CalendarScreenState extends State<CalendarScreen> {
       ],
     };
   }
+  void _onItemTapped(int index) {
+    setState(() {
+      _selectedIndex = index;
+    });
+
+    switch (index) {
+      case 0:
+      // Already on the Calendar screen
+        break;
+      case 1:
+        Navigator.push(
+          context,
+          MaterialPageRoute(builder: (context) => const ScheduleScreen()),
+        );
+        break;
+      case 2:
+        Navigator.push(
+          context,
+          MaterialPageRoute(builder: (context) => const ProfileScreen()),
+        );
+        break;
+    }
+  }
+
 
   // ===========================================
   // 2. 일정 관리 함수
@@ -526,6 +554,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
           ),
         ],
       ),
+      bottomNavigationBar: _buildBottomNavBar(),
     );
   }
 
@@ -599,6 +628,33 @@ class _CalendarScreenState extends State<CalendarScreen> {
           );
         }).toList(),
       ),
+    );
+  }
+  Widget _buildBottomNavBar() {
+    return BottomNavigationBar(
+      items: const <BottomNavigationBarItem>[
+        BottomNavigationBarItem(
+          icon: Icon(Icons.calendar_today),
+          label: 'Schedule',
+        ),
+        BottomNavigationBarItem(
+          icon: Icon(Icons.home),
+          label: 'Home',
+        ),
+        BottomNavigationBarItem(
+          icon: Icon(Icons.person),
+          label: 'profile',
+        ),
+      ],
+      currentIndex: _selectedIndex,
+      onTap: _onItemTapped,
+      selectedItemColor: Colors.purple[300],
+      unselectedItemColor: Colors.grey,
+      showSelectedLabels: true,
+      showUnselectedLabels: true,
+      backgroundColor: Colors.white,
+      elevation: 3,
+      type: BottomNavigationBarType.fixed,
     );
   }
 }
