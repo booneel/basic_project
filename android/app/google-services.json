@@ -1,0 +1,49 @@
+{
+  "project_info": {
+    "project_number": "763682210661",
+    "firebase_url": "https://basicproject-95e20-default-rtdb.firebaseio.com",
+    "project_id": "basicproject-95e20",
+    "storage_bucket": "basicproject-95e20.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:763682210661:android:51c2d68c05061f2295d78c",
+        "android_client_info": {
+          "package_name": "com.example.amseng_planner"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBxhRiu_B_CUW8xUijs-AkgWpZ4rEP4qdA"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:763682210661:android:e81a45dbbd71d1b495d78c",
+        "android_client_info": {
+          "package_name": "com.example.flutterproject1"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBxhRiu_B_CUW8xUijs-AkgWpZ4rEP4qdA"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

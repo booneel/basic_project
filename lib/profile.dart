@@ -1,23 +1,9 @@
 import 'package:flutter/material.dart';
-import 'main.dart';
-import 'set_calendar.dart';
-import 'wish.dart';
+import 'main.dart'; // ScheduleScreen 임포트
+import 'set_calendar.dart'; // CalendarScreen 임포트
+import 'wish.dart'; // GoalSettingScreen 임포트
 
-void main() {
-  runApp(const MyApp());
-}
-
-class MyApp extends StatelessWidget {
-  const MyApp({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return const MaterialApp(
-      debugShowCheckedModeBanner: false,
-      home: ProfileScreen(),
-    );
-  }
-}
+// main.dart에서 실행되므로 main 함수는 제거하고 ProfileScreen만 남김
 
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
@@ -30,25 +16,24 @@ class _ProfileScreenState extends State<ProfileScreen> {
   int _selectedIndex = 2; // Profile screen is active by default
 
   void _onItemTapped(int index) {
-    setState(() {
-      _selectedIndex = index;
-    });
+    if (_selectedIndex == index) return;
 
+    // pushReplacement를 사용하여 깔끔하게 화면 전환
     switch (index) {
       case 0:
-        Navigator.push(
+        Navigator.pushReplacement(
           context,
           MaterialPageRoute(builder: (context) => const CalendarScreen()),
         );
         break;
       case 1:
-        Navigator.push(
+        Navigator.pushReplacement(
           context,
           MaterialPageRoute(builder: (context) => const ScheduleScreen()),
         );
         break;
       case 2:
-      // Already on the Profile screen
+        // Already on the Profile screen
         break;
     }
   }
@@ -97,11 +82,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 const Text(
-                  '이백수',
+                  '이백수 (임시 사용자)',
                   style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
                 ),
                 const Text(
-                  'team@gmail.com',
+                  'test_user@goalapp.com',
                   style: TextStyle(fontSize: 14, color: Colors.grey),
                 ),
                 const SizedBox(height: 10),
@@ -110,29 +95,36 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   style: TextStyle(fontSize: 13, color: Colors.grey),
                 ),
                 const Text(
-                  '다이어트',
+                  '맞춤형 목표 진행 중',
                   style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
                 ),
                 const SizedBox(height: 4),
                 GestureDetector(
                   onTap: () {
-                    Navigator.push(
+                    Navigator.pushReplacement(
+                      // pushReplacement 사용
                       context,
-                      MaterialPageRoute(builder: (context) => const GoalSettingScreen()),
+                      MaterialPageRoute(
+                        builder: (context) => const GoalSettingScreen(),
+                      ),
                     );
                   },
                   child: Container(
                     padding: const EdgeInsets.symmetric(
-                        horizontal: 12, vertical: 4),
+                      horizontal: 12,
+                      vertical: 4,
+                    ),
                     decoration: BoxDecoration(
                       color: Colors.blue[100],
                       borderRadius: BorderRadius.circular(12),
                     ),
                     child: const Text(
-                      '목표 변경',
-                      style: TextStyle(fontSize: 11,
-                          color: Colors.blue,
-                          fontWeight: FontWeight.bold),
+                      '목표 재설정',
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: Colors.blue,
+                        fontWeight: FontWeight.bold,
+                      ),
                     ),
                   ),
                 ),
@@ -142,16 +134,14 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   style: TextStyle(fontSize: 13, color: Colors.grey),
                 ),
                 const Text(
-                  '21일',
+                  'N/A',
                   style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
                 ),
               ],
             ),
           ),
-          Image.asset(
-            'asset/img/Mark.png', // You need to add your image to assets
-            height: 130,
-          ),
+          // Image.asset 대신 Icon으로 대체
+          Icon(Icons.person_pin, size: 130, color: Colors.purple[300]),
         ],
       ),
     );
@@ -159,18 +149,21 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   Widget _buildLogoutButton() {
     return ElevatedButton(
-      onPressed: () {},
+      onPressed: () {
+        // 실제 로그아웃 로직 (Firebase Auth) 필요
+      },
       style: ElevatedButton.styleFrom(
         backgroundColor: Colors.redAccent,
         minimumSize: const Size(double.infinity, 50),
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(12),
-        ),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       ),
       child: const Text(
         '로그아웃 하기',
         style: TextStyle(
-            fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white),
+          fontSize: 16,
+          fontWeight: FontWeight.bold,
+          color: Colors.white,
+        ),
       ),
     );
   }
@@ -182,12 +175,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
         crossAxisSpacing: 16,
         mainAxisSpacing: 16,
         childAspectRatio: 1.0,
-        // Adjust aspect ratio for better centering
         children: [
           _buildStatCard(
-            imagePath: 'asset/img/google.png', // Path to your Google logo
-            title: '구글 로그인',
-            value: '',
+            icon: Icons.vpn_key,
+            title: '인증 상태',
+            value: 'OK',
             isProgress: false,
           ),
           _buildStatCard(
@@ -196,23 +188,15 @@ class _ProfileScreenState extends State<ProfileScreen> {
             value: '27%',
             isProgress: true,
           ),
-          _buildStatCard(
-            title: '퍼펙트 데이',
-            value: '7',
-            isProgress: false,
-          ),
-          _buildStatCard(
-            title: '평균 달성률',
-            value: '70%',
-            isProgress: false,
-          ),
+          _buildStatCard(title: '퍼펙트 데이', value: '7', isProgress: false),
+          _buildStatCard(title: '평균 달성률', value: '70%', isProgress: false),
         ],
       ),
     );
   }
 
   Widget _buildStatCard({
-    String? imagePath,
+    IconData? icon,
     Color? color,
     required String title,
     required String value,
@@ -238,19 +222,23 @@ class _ProfileScreenState extends State<ProfileScreen> {
           if (isProgress)
             Text(
               value,
-              style: const TextStyle(fontSize: 50,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.white),
+              style: const TextStyle(
+                fontSize: 50,
+                fontWeight: FontWeight.bold,
+                color: Colors.white,
+              ),
+            )
+          else if (icon != null)
+            Icon(
+              icon,
+              size: 60,
+              color: color == null ? Colors.black : Colors.white,
             )
           else
-            if (imagePath != null)
-              Image.asset(imagePath, height: 60) // Adjusted image height
-            else
-              Text(
-                value,
-                style: const TextStyle(
-                    fontSize: 50, fontWeight: FontWeight.bold),
-              ),
+            Text(
+              value,
+              style: const TextStyle(fontSize: 50, fontWeight: FontWeight.bold),
+            ),
           const SizedBox(height: 8),
           Text(
             title,
@@ -265,7 +253,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
   }
 
-
   Widget _buildBottomNavBar() {
     return BottomNavigationBar(
       items: const <BottomNavigationBarItem>[
@@ -273,14 +260,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
           icon: Icon(Icons.calendar_today),
           label: 'Schedule',
         ),
-        BottomNavigationBarItem(
-          icon: Icon(Icons.home),
-          label: 'Home',
-        ),
-        BottomNavigationBarItem(
-          icon: Icon(Icons.person),
-          label: 'profile',
-        ),
+        BottomNavigationBarItem(icon: Icon(Icons.home), label: 'Home'),
+        BottomNavigationBarItem(icon: Icon(Icons.person), label: 'profile'),
       ],
       currentIndex: _selectedIndex,
       onTap: _onItemTapped,
