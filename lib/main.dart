@@ -146,14 +146,44 @@ class MyApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        fontFamily: 'Roboto',
-        primaryColor: Colors.purple[300],
-        splashFactory: NoSplash.splashFactory,
-      ),
-      home: const GoalSettingScreen(), // 시작 화면을 GoalSettingScreen으로 변경
+    // 🌟 [핵심 수정] FutureBuilder를 사용하여 Firebase 초기화 완료를 보장합니다.
+    return FutureBuilder(
+      future: initializeFirebase(), // initializeFirebase()의 Future를 기다립니다.
+      builder: (context, snapshot) {
+        // 초기화 완료 상태 확인
+        if (snapshot.connectionState == ConnectionState.done) {
+          if (snapshot.hasError) {
+            // 초기화 실패 시 에러 화면 표시
+            return MaterialApp(
+              home: Scaffold(
+                body: Center(
+                  // 🚨 오류 메시지를 명확히 출력하여 최종 원인 진단
+                  child: Text('Firebase 초기화 실패: ${snapshot.error}'),
+                ),
+              ),
+            );
+          }
+          // 🚨 초기화 완료! 이제 _db에 안전하게 접근 가능합니다.
+          return MaterialApp(
+            debugShowCheckedModeBanner: false,
+            theme: ThemeData(
+              fontFamily: 'Roboto',
+              primaryColor: Colors.purple[300],
+              splashFactory: NoSplash.splashFactory,
+            ),
+            home: const GoalSettingScreen(), // 시작 화면
+          );
+        }
+
+        // 초기화 중에는 로딩 화면 표시
+        return const MaterialApp(
+          home: Scaffold(
+            body: Center(
+              child: CircularProgressIndicator(),
+            ),
+          ),
+        );
+      },
     );
   }
 }

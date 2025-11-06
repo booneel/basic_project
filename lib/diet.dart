@@ -1,12 +1,14 @@
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
+import 'package:intl/date_symbol_data_local.dart';
 import 'main.dart'; // ScheduleScreen 임포트
 import 'wish.dart'; // GoalKeyword 임포트
 
-// main.dart에서 실행되므로 main 함수는 제거하고 AnalysisScreen만 남김
+// -----------------------------------------------------------
 
 /// 목표 분석 결과를 표시하고, 사용자가 핵심 키워드를 선택하는 화면
 class AnalysisScreen extends StatelessWidget {
-  // 이전 화면에서 전달받은 분석된 키워드 리스트
   final List<GoalKeyword> keywords;
 
   const AnalysisScreen({super.key, required this.keywords});
@@ -67,7 +69,7 @@ class AnalysisScreen extends StatelessWidget {
   Widget _buildOptionButton(BuildContext context, GoalKeyword keyword) {
     return ElevatedButton(
       onPressed: () {
-        // 선택된 키워드를 ScheduleScreen으로 전달하여 LLM 스케줄 생성을 요청
+        // 🌟 [라우팅 방식 유지] ScheduleScreen으로 이동하며 goalKeyword 전달
         Navigator.pushReplacement(
           context,
           MaterialPageRoute(

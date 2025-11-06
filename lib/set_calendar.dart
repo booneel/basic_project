@@ -3,22 +3,26 @@ import 'package:flutter/cupertino.dart';
 import 'package:intl/intl.dart';
 import 'package:intl/date_symbol_data_local.dart';
 import 'dart:async';
-import 'main.dart'; // ScheduleScreen, getDb, getUserId 임포트
-import 'profile.dart';
+import 'main.dart'; // ScheduleScreen, getDb, getUserId 임포트 (main.dart에 있다고 가정)
+import 'profile.dart'; // ProfileScreen 임포트
 import 'package:cloud_firestore/cloud_firestore.dart';
 
-// 1. 일정 데이터 모델 정의
+// ----------------------------------------------------------------------
+// 1. 일정 데이터 모델 정의 (핵심 수정 부분)
+// ----------------------------------------------------------------------
 class CalendarScheduleItem {
   final String id;
   String title;
-  String time; // "HH:MM-HH:MM" 형식
+  String time; // "HH:MM-HH:MM" 형식 (예: 10:00-11:30)
   final int colorValue; // 색상 정수 값으로 저장
+  final String dateKey; // 👈 [핵심 수정] YYYY-MM-DD 형식의 날짜 키 (쿼리 필터링용)
 
   CalendarScheduleItem({
     required this.id,
     required this.title,
     required this.time,
     required this.colorValue,
+    required this.dateKey, // 👈 [핵심 수정] 생성자에 추가
   });
 
   factory CalendarScheduleItem.fromFirestore(DocumentSnapshot doc) {
@@ -28,43 +32,33 @@ class CalendarScheduleItem {
       title: data['title'] ?? '',
       time: data['time'] ?? '00:00-00:00',
       colorValue: data['colorValue'] ?? Colors.blue.value,
+      dateKey: data['dateKey'] ?? '0000-00-00', // 👈 [핵심 수정] 필드 추가
     );
   }
 
   Map<String, dynamic> toFirestore() {
-    // 🌟 [수정 1] Firestore 쿼리를 위해 'yearMonthKey' 필드 추가
-    final timeParts = time.split('-');
-    if (timeParts.isEmpty) {
-      // 시간 형식이 잘못된 경우 대비
-      return {'title': title, 'time': time, 'colorValue': colorValue};
-    }
-
-    // time 필드가 HH:MM-HH:MM 형식이므로, 날짜 정보를 알 수 없음.
-    // 임시로 오늘 날짜를 기준으로 DateFormat을 적용하기 어려움.
-    // 이전에 _addSchedule에서 id를 통해 날짜를 포함시켰으므로,
-    // 여기서는 dateKey와 yearMonthKey를 필수 필드로 간주하고 작성합니다.
-
-    // 실제 Firestore에 저장되는 문서가 dateKey 필드를 포함한다고 가정
-    final dateKey = timeParts[0]; // 실제로는 YYYY-MM-DD가 포함되어야 함
-
-    // 날짜 키에서 연월 추출 (YYYY-MM 형식의 문자열이 필요)
+    // dateKey가 YYYY-MM-DD 형식이라고 가정하고 yearMonthKey 생성
     String yearMonthKey;
     try {
-      yearMonthKey = dateKey.substring(0, 7); // 예: "2025-11-06" -> "2025-11"
+      yearMonthKey = dateKey.substring(0, 7); // YYYY-MM-DD -> YYYY-MM
     } catch (e) {
-      yearMonthKey = '0000-00'; // 예외 처리
+      yearMonthKey = '0000-00';
     }
 
     return {
       'title': title,
       'time': time,
       'colorValue': colorValue,
-      'dateKey': dateKey,
-      'yearMonthKey': yearMonthKey, // 👈 쿼리 필터링을 위한 필드
+      'dateKey': dateKey, // 👈 [핵심 수정] Firestore에 날짜 키 저장
+      'yearMonthKey': yearMonthKey, // 월별 필터링을 위한 키
     };
   }
 }
 
+
+// ----------------------------------------------------------------------
+// 2. 캘린더 화면 위젯
+// ----------------------------------------------------------------------
 class CalendarScreen extends StatefulWidget {
   const CalendarScreen({super.key});
 
@@ -73,297 +67,233 @@ class CalendarScreen extends StatefulWidget {
 }
 
 class _CalendarScreenState extends State<CalendarScreen> {
-  late DateTime _currentDate; // 현재 달력에 표시되는 월/년도
-  late DateTime _selectedDate; // 사용자가 선택한 날짜
-  final DateTime _today = DateTime.now().toLocal(); // 오늘 날짜
-  int _selectedIndex = 0;
+  DateTime _focusedDay = DateTime.now();
+  DateTime _selectedDay = DateTime.now();
 
-  // 1-1. 스케줄에 사용할 색상 리스트 정의
-  final List<Color> _scheduleColors = const [
-    Colors.green,
-    Colors.blue,
-    Colors.red,
-    Colors.orange,
-    Colors.teal,
-    Colors.deepPurple,
-  ];
-
-  // 스케줄 데이터 맵 (날짜 키: List<일정>)
+  // 캘린더는 한 달 단위로 데이터를 관리하고, 선택된 날짜의 일정을 보여줍니다.
+  // 이 맵은 현재 달력에 보이는 모든 월의 일정을 담습니다. (키: YYYY-MM-DD)
   Map<String, List<CalendarScheduleItem>> _schedules = {};
-  StreamSubscription? _scheduleSubscription;
+
+  bool _isLoading = true;
+  int _selectedIndex = 0; // 캘린더 화면이 0번 인덱스
+
+  StreamSubscription<QuerySnapshot>? _scheduleSubscription; // 실시간 리스너
 
   @override
   void initState() {
     super.initState();
+    initializeDateFormatting('ko_KR', null).then((_) {
+      _focusedDay = DateTime.now();
+      _selectedDay = DateTime(_focusedDay.year, _focusedDay.month, _focusedDay.day);
 
-    final DateTime now = DateTime.now();
-    _currentDate = DateTime(now.year, now.month, 1); // 현재 달의 1일
-    _selectedDate = DateTime(now.year, now.month, now.day); // 오늘 날짜
-
-    // initState에서 리스너 시작
-    _startScheduleListener();
+      // 🚨 [Firebase 안정화] FutureBuilder가 완료될 때까지 지연 호출
+      Future.delayed(Duration.zero, () {
+        if (mounted) {
+          _startScheduleListener();
+        }
+      });
+    });
   }
 
   @override
   void dispose() {
-    _scheduleSubscription?.cancel();
+    _scheduleSubscription?.cancel(); // 위젯 종료 시 리스너 해제
     super.dispose();
   }
 
-  // ===========================================
-  // 2. Firebase 연동 및 리스너
-  // ===========================================
+  // ----------------------------------------------------------------------
+  // Firestore 연동 및 데이터 관리
+  // ----------------------------------------------------------------------
 
+  /// Firestore에서 현재 달의 일정을 실시간으로 가져오는 리스너 설정
   void _startScheduleListener() {
-    // 🚨 [수정 2] 리스너 중복 방지를 위해 기존 리스너 취소
-    _scheduleSubscription?.cancel();
+    _scheduleSubscription?.cancel(); // 기존 리스너 해제
 
+    // Firestore 인스턴스 및 경로를 main.dart에서 가져옴
     final db = getDb();
     final collectionPath = getScheduleCollectionPath();
 
-    // 🌟 현재 달의 키를 기반으로 쿼리 필터링 (YYYY-MM 형식)
-    final yearMonth = DateFormat('yyyy-MM').format(_currentDate);
+    // 현재 달을 YYYY-MM 형식으로 필터링 키 생성
+    final yearMonthKey = DateFormat('yyyy-MM').format(_focusedDay);
 
-    // 🚨 [수정 2] where 쿼리를 사용하여 해당 월의 데이터만 로드하도록 변경
-    _scheduleSubscription = db
-        .collection(collectionPath)
-        .where('yearMonthKey', isEqualTo: yearMonth)
-        .snapshots()
-        .listen(
-          (snapshot) {
-            final newSchedules = <String, List<CalendarScheduleItem>>{};
+    try {
+      _scheduleSubscription = db
+          .collection(collectionPath)
+          .where('yearMonthKey', isEqualTo: yearMonthKey) // 👈 월별 필터링
+          .snapshots()
+          .listen((snapshot) {
+        final newSchedules = <String, List<CalendarScheduleItem>>{};
 
-            for (var doc in snapshot.docs) {
-              final item = CalendarScheduleItem.fromFirestore(doc);
-              final data = doc.data() as Map<String, dynamic>;
+        for (var doc in snapshot.docs) {
+          final item = CalendarScheduleItem.fromFirestore(doc);
+          final String dateKey = item.dateKey; // YYYY-MM-DD
 
-              // Firestore 문서에 저장된 'dateKey' 필드를 사용하여 그룹핑
-              final String dateKey = data['dateKey'] ?? '0000-00-00';
+          if (!newSchedules.containsKey(dateKey)) {
+            newSchedules[dateKey] = [];
+          }
+          newSchedules[dateKey]!.add(item);
+        }
 
-              if (!newSchedules.containsKey(dateKey)) {
-                newSchedules[dateKey] = [];
-              }
-              newSchedules[dateKey]!.add(item);
-            }
-
-            // 일정 시간 기준으로 정렬
-            newSchedules.forEach((key, list) {
-              list.sort(
+        // 일정 시간순 정렬
+        newSchedules.forEach((key, list) {
+          list.sort(
                 (a, b) => a.time.split('-')[0].compareTo(b.time.split('-')[0]),
-              );
-            });
+          );
+        });
 
-            setState(() {
-              _schedules = newSchedules;
-            });
-          },
-          onError: (error) {
-            print("Error loading schedules: $error");
-          },
-        );
+        setState(() {
+          _schedules = newSchedules;
+          _isLoading = false;
+        });
+      }, onError: (error) {
+        print("Error listening to schedules: $error");
+        setState(() {
+          _isLoading = false;
+          _schedules = {};
+        });
+      });
+    } catch (e) {
+      print("Firestore Listener setup error: $e");
+      setState(() {
+        _isLoading = false;
+        _schedules = {};
+      });
+    }
   }
 
-  // ===========================================
-  // 3. 일정 관리 (CRUD) 함수
-  // ===========================================
-
-  // 날짜 키 생성 (YYYY-MM-DD)
+  /// 날짜 키 생성 (YYYY-MM-DD)
   String _getDateKey(DateTime date) {
     return DateFormat('yyyy-MM-dd').format(date);
   }
 
-  // 일정 추가 (Create)
-  Future<void> _addSchedule(String dateKey, String title, String time) async {
+  /// 일정 추가
+  Future<void> _addSchedule(String title, String startTime, String endTime, int color) async {
     final db = getDb();
     final collectionPath = getScheduleCollectionPath();
-    final existingCount = _schedules[dateKey]?.length ?? 0;
-    final colorIndex = existingCount % _scheduleColors.length;
+    final dateKey = _getDateKey(_selectedDay);
+    final timeString = '$startTime-$endTime';
 
-    final newItem = CalendarScheduleItem(
-      // Firestore Doc ID로 사용될 고유 ID 생성 (날짜 정보 포함)
-      id: '${DateTime.now().millisecondsSinceEpoch}_$dateKey',
+    // Firestore Doc ID로 사용될 고유 ID 생성
+    final newId = '${DateTime.now().millisecondsSinceEpoch}_$dateKey';
+
+    final newSchedule = CalendarScheduleItem(
+      id: newId,
       title: title,
-      time: time,
-      colorValue: _scheduleColors[colorIndex].value,
+      time: timeString,
+      colorValue: color,
+      dateKey: dateKey, // 👈 [핵심 수정] dateKey 전달
     );
 
-    // 🌟 toFirestore 호출 시 dateKey와 yearMonthKey가 계산되어 포함됨
-    final firestoreData = newItem.toFirestore();
-
     try {
-      await db.collection(collectionPath).doc(newItem.id).set({
-        ...firestoreData,
-        'createdAt': FieldValue.serverTimestamp(),
-      });
-      _showSnackBar('일정이 추가되었습니다.', Colors.green);
+      await db
+          .collection(collectionPath)
+          .doc(newId)
+          .set(newSchedule.toFirestore());
     } catch (e) {
-      _showSnackBar('일정 추가에 실패했습니다: $e', Colors.red);
+      print("Error adding schedule: $e");
+      // 에러 메시지를 사용자에게 보여주는 UI 로직 추가 가능
     }
   }
 
-  // 일정 삭제 (Delete)
-  Future<void> _deleteSchedule(String itemId) async {
-    if (!_canModifySchedule(_selectedDate)) {
-      _showAlertDialog('알림', '오늘을 포함하여 이전 날짜의 일정은 수정 또는 삭제할 수 없습니다.');
-      return;
-    }
-
+  /// 일정 삭제
+  Future<void> _deleteSchedule(String scheduleId) async {
     final db = getDb();
     final collectionPath = getScheduleCollectionPath();
 
     try {
-      await db.collection(collectionPath).doc(itemId).delete();
-      _showSnackBar('일정이 삭제되었습니다.', Colors.orange);
+      await db
+          .collection(collectionPath)
+          .doc(scheduleId)
+          .delete();
     } catch (e) {
-      _showSnackBar('일정 삭제에 실패했습니다: $e', Colors.red);
+      print("Error deleting schedule: $e");
     }
   }
 
-  // ===========================================
-  // 4. 날짜 및 UI 유틸리티
-  // ===========================================
+  // ----------------------------------------------------------------------
+  // UI 로직
+  // ----------------------------------------------------------------------
 
-  // 시간 형식 변환
-  String _formatTimeOfDay(TimeOfDay? time) {
-    if (time == null) return '선택';
-    final now = DateTime.now();
-    final dt = DateTime(now.year, now.month, now.day, time.hour, time.minute);
-    return DateFormat('HH:mm').format(dt); // 24시간 형식 유지
-  }
-
-  // 일정 수정/삭제 가능 여부 확인 (오늘 날짜 포함 이전 날짜는 불가능)
-  bool _canModifySchedule(DateTime date) {
-    // 날짜 정규화: 시, 분, 초를 제거하고 날짜만 비교
-    final normalizedSelectedDate = DateTime(date.year, date.month, date.day);
-    final normalizedToday = DateTime(_today.year, _today.month, _today.day);
-
-    // 선택된 날짜가 오늘보다 이전이거나 오늘과 같은 경우
-    return !(normalizedSelectedDate.isBefore(normalizedToday) ||
-        normalizedSelectedDate.isAtSameMomentAs(normalizedToday));
-  }
-
-  void _showSnackBar(String message, Color color) {
-    if (mounted) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(message), backgroundColor: color));
+  /// 날짜 선택 시 호출되는 함수
+  void _onDaySelected(DateTime selectedDay) {
+    if (selectedDay.month != _focusedDay.month) {
+      // 월이 바뀌면 캘린더를 포커싱하고 리스너를 재설정해야 함
+      _focusedDay = selectedDay;
+      _startScheduleListener(); // 월이 바뀌었으니 DB 리스너 재시작
     }
+    setState(() {
+      _selectedDay = DateTime(selectedDay.year, selectedDay.month, selectedDay.day);
+      _isLoading = false;
+    });
   }
 
-  void _showAlertDialog(String title, String content) {
-    showDialog(
+  /// 일정 추가 다이얼로그
+  void _showAddScheduleDialog() {
+    final titleController = TextEditingController();
+    DateTime startTime = DateTime(
+        _selectedDay.year, _selectedDay.month, _selectedDay.day, 9, 0);
+    DateTime endTime = startTime.add(const Duration(hours: 1));
+    int selectedColor = Colors.purple.value;
+
+    showCupertinoModalPopup<void>(
       context: context,
       builder: (BuildContext context) {
-        return AlertDialog(
-          title: Text(title),
-          content: Text(content),
-          actions: <Widget>[
-            TextButton(
-              child: const Text('확인'),
-              onPressed: () {
-                Navigator.of(context).pop();
-              },
-            ),
-          ],
-        );
-      },
-    );
-  }
-
-  // 일정 추가 다이얼로그
-  void _showAddScheduleDialog() {
-    if (!_canModifySchedule(_selectedDate)) {
-      _showAlertDialog('알림', '오늘을 포함하여 이전 날짜에는 일정을 추가하거나 수정할 수 없습니다.');
-      return;
-    }
-
-    String title = '';
-    TimeOfDay? startTime;
-    TimeOfDay? endTime;
-
-    showDialog(
-      context: context,
-      builder: (context) {
         return StatefulBuilder(
-          builder: (context, setStateInDialog) {
-            return AlertDialog(
-              title: const Text('새 일정 추가'),
-              content: SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: <Widget>[
-                    TextField(
-                      decoration: const InputDecoration(labelText: '일정 제목'),
-                      onChanged: (value) => title = value,
-                    ),
-                    const SizedBox(height: 15),
-                    ListTile(
-                      title: const Text('시작 시간'),
-                      trailing: Text(_formatTimeOfDay(startTime)),
-                      onTap: () async {
-                        final TimeOfDay? pickedTime = await showTimePicker(
-                          context: context,
-                          initialTime: startTime ?? TimeOfDay.now(),
-                          builder: (context, child) {
-                            return MediaQuery(
-                              data: MediaQuery.of(
-                                context,
-                              ).copyWith(alwaysUse24HourFormat: true),
-                              child: child!,
-                            );
-                          },
-                        );
-                        if (pickedTime != null) {
-                          setStateInDialog(() => startTime = pickedTime);
-                        }
-                      },
-                    ),
-                    ListTile(
-                      title: const Text('종료 시간'),
-                      trailing: Text(_formatTimeOfDay(endTime)),
-                      onTap: () async {
-                        final TimeOfDay? pickedTime = await showTimePicker(
-                          context: context,
-                          initialTime: endTime ?? startTime ?? TimeOfDay.now(),
-                          builder: (context, child) {
-                            return MediaQuery(
-                              data: MediaQuery.of(
-                                context,
-                              ).copyWith(alwaysUse24HourFormat: true),
-                              child: child!,
-                            );
-                          },
-                        );
-                        if (pickedTime != null) {
-                          setStateInDialog(() => endTime = pickedTime);
-                        }
-                      },
-                    ),
-                  ],
-                ),
+          builder: (BuildContext context, StateSetter setModalState) {
+            return CupertinoActionSheet(
+              title: Text(
+                  '${DateFormat('yyyy년 M월 d일', 'ko_KR').format(_selectedDay)} 일정 추가'),
+              message: Column(
+                children: [
+                  CupertinoTextField(
+                    controller: titleController,
+                    placeholder: '일정 제목',
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(8)),
+                    style: const TextStyle(fontSize: 16),
+                  ),
+                  const SizedBox(height: 10),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceAround,
+                    children: [
+                      _buildTimePickerButton('시작 시간', startTime, (newTime) {
+                        setModalState(() => startTime = newTime);
+                      }),
+                      _buildTimePickerButton('종료 시간', endTime, (newTime) {
+                        setModalState(() => endTime = newTime);
+                      }),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  _buildColorPicker(selectedColor, (color) {
+                    setModalState(() => selectedColor = color);
+                  }),
+                ],
               ),
-
-              actions: <Widget>[
-                TextButton(
-                  child: const Text('취소'),
-                  onPressed: () => Navigator.of(context).pop(),
-                ),
-                TextButton(
-                  child: const Text('추가'),
+              actions: <CupertinoActionSheetAction>[
+                CupertinoActionSheetAction(
+                  isDefaultAction: true,
                   onPressed: () {
-                    if (title.isNotEmpty &&
-                        startTime != null &&
-                        endTime != null) {
-                      final timeString =
-                          '${_formatTimeOfDay(startTime)}-${_formatTimeOfDay(endTime)}';
-                      final dateKey = _getDateKey(_selectedDate);
-
-                      _addSchedule(dateKey, title, timeString);
-                      Navigator.of(context).pop();
-                    } else {
-                      _showSnackBar('제목과 시간을 모두 입력해주세요.', Colors.redAccent);
+                    if (titleController.text.isEmpty) {
+                      // 제목이 비어있으면 알림
+                      return;
                     }
+                    _addSchedule(
+                      titleController.text,
+                      DateFormat('HH:mm').format(startTime),
+                      DateFormat('HH:mm').format(endTime),
+                      selectedColor,
+                    );
+                    Navigator.pop(context);
                   },
+                  child: const Text('저장'),
+                ),
+                CupertinoActionSheetAction(
+                  isDestructiveAction: true,
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('취소'),
                 ),
               ],
             );
@@ -373,428 +303,108 @@ class _CalendarScreenState extends State<CalendarScreen> {
     );
   }
 
-  // ===========================================
-  // 5. 달력 제어 및 UI
-  // ===========================================
-
-  void _onItemTapped(int index) {
-    setState(() {
-      _selectedIndex = index;
-    });
-
-    switch (index) {
-      case 0:
-        // Already on the Calendar screen
-        break;
-      case 1:
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(builder: (context) => const ScheduleScreen()),
+  /// 시간 선택 버튼
+  Widget _buildTimePickerButton(String label, DateTime time,
+      Function(DateTime) onTimeChanged) {
+    return CupertinoButton(
+      padding: EdgeInsets.zero,
+      onPressed: () {
+        showCupertinoModalPopup<void>(
+          context: context,
+          builder: (BuildContext context) {
+            return Container(
+              height: 200,
+              color: Colors.white,
+              child: CupertinoDatePicker(
+                mode: CupertinoDatePickerMode.time,
+                initialDateTime: time,
+                onDateTimeChanged: (DateTime newDateTime) {
+                  onTimeChanged(newDateTime);
+                },
+              ),
+            );
+          },
         );
-        break;
-      case 2:
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(builder: (context) => const ProfileScreen()),
+      },
+      child: Text('$label: ${DateFormat('HH:mm').format(time)}',
+          style: TextStyle(color: Colors.purple)),
+    );
+  }
+
+  /// 색상 선택 위젯
+  Widget _buildColorPicker(int selectedColor, Function(int) onColorSelected) {
+    final colors = [
+      Colors.purple,
+      Colors.blue,
+      Colors.green,
+      Colors.orange,
+      Colors.red,
+    ];
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: colors.map((color) {
+        return GestureDetector(
+          onTap: () => onColorSelected(color.value),
+          child: Padding(
+            padding: const EdgeInsets.all(4.0),
+            child: CircleAvatar(
+              radius: selectedColor == color.value ? 14 : 10,
+              backgroundColor: color,
+              child: selectedColor == color.value
+                  ? const Icon(Icons.check, color: Colors.white, size: 16)
+                  : null,
+            ),
+          ),
         );
-        break;
-    }
-  }
-
-  void _goToPreviousMonth() {
-    setState(() {
-      _currentDate = DateTime(_currentDate.year, _currentDate.month - 1, 1);
-      _selectedDate = DateTime(_currentDate.year, _currentDate.month, 1);
-    });
-    // 🚨 [수정 3] 월 변경 시 리스너 재시작
-    _startScheduleListener();
-  }
-
-  void _goToNextMonth() {
-    setState(() {
-      _currentDate = DateTime(_currentDate.year, _currentDate.month + 1, 1);
-      _selectedDate = DateTime(_currentDate.year, _currentDate.month, 1);
-    });
-    // 🚨 [수정 3] 월 변경 시 리스너 재시작
-    _startScheduleListener();
-  }
-
-  void _selectDay(DateTime date) {
-    setState(() {
-      _selectedDate = date;
-    });
-  }
-
-  // 달력 날짜 그리드
-  Widget _buildDateGrid() {
-    final DateTime firstDayOfMonth = DateTime(
-      _currentDate.year,
-      _currentDate.month,
-      1,
-    );
-    final int daysInMonth = DateTime(
-      _currentDate.year,
-      _currentDate.month + 1,
-      0,
-    ).day;
-    final int weekdayOfFirstDay = firstDayOfMonth.weekday % 7;
-
-    final List<DateTime?> days = [];
-    for (int i = 0; i < weekdayOfFirstDay; i++) {
-      days.add(null);
-    }
-    for (int i = 1; i <= daysInMonth; i++) {
-      days.add(DateTime(_currentDate.year, _currentDate.month, i));
-    }
-    while (days.length % 7 != 0) {
-      days.add(null);
-    }
-
-    final normalizedToday = DateTime(_today.year, _today.month, _today.day);
-
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 8.0),
-      child: GridView.builder(
-        shrinkWrap: true,
-        physics: const NeverScrollableScrollPhysics(),
-        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-          crossAxisCount: 7,
-          mainAxisSpacing: 10,
-          crossAxisSpacing: 0,
-          childAspectRatio: 1.0,
-        ),
-        itemCount: days.length,
-        itemBuilder: (context, index) {
-          final date = days[index];
-
-          if (date == null) {
-            return const Center();
-          }
-
-          final isSelected =
-              date.year == _selectedDate.year &&
-              date.month == _selectedDate.month &&
-              date.day == _selectedDate.day;
-
-          final normalizedDate = DateTime(date.year, date.month, date.day);
-          final isPastOrToday =
-              normalizedDate.isBefore(normalizedToday) ||
-              normalizedDate.isAtSameMomentAs(normalizedToday);
-
-          final dateKey = _getDateKey(date);
-          final schedulesForDay = _schedules[dateKey] ?? [];
-
-          return Center(
-            child: GestureDetector(
-              onTap: () => _selectDay(date),
-              child: Container(
-                width: 38,
-                height: 38,
-                decoration: BoxDecoration(
-                  color: isSelected
-                      ? Theme.of(context).primaryColor.withOpacity(0.15)
-                      : null,
-                  shape: BoxShape.circle,
-                  border: isSelected
-                      ? Border.all(
-                          color: Theme.of(context).primaryColor,
-                          width: 1.5,
-                        )
-                      : null,
-                ),
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Text(
-                      '${date.day}',
-                      style: TextStyle(
-                        fontSize: 15,
-                        fontWeight: FontWeight.w600,
-                        color: isSelected
-                            ? Theme.of(context).primaryColor
-                            : (isPastOrToday && !isSelected
-                                  ? Colors.grey
-                                  : Colors.black),
-                      ),
-                    ),
-                    if (schedulesForDay.isNotEmpty)
-                      Padding(
-                        padding: const EdgeInsets.only(top: 3.0),
-                        child: Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: schedulesForDay.take(3).map((schedule) {
-                            return Container(
-                              margin: const EdgeInsets.symmetric(horizontal: 1),
-                              width: 4,
-                              height: 4,
-                              decoration: BoxDecoration(
-                                color: isSelected
-                                    ? Theme.of(context).primaryColor
-                                    : Color(schedule.colorValue),
-                                shape: BoxShape.circle,
-                              ),
-                            );
-                          }).toList(),
-                        ),
-                      ),
-                  ],
-                ),
-              ),
-            ),
-          );
-        },
-      ),
+      }).toList(),
     );
   }
 
-  // 선택된 날짜의 일정 목록을 표시하는 항목 빌더
-  Widget _buildScheduleDetailItem(CalendarScheduleItem item) {
-    final canModify = _canModifySchedule(_selectedDate);
-
-    return Container(
-      margin: const EdgeInsets.only(bottom: 10.0),
-      padding: const EdgeInsets.all(16.0),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(15),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.grey.shade200,
-            spreadRadius: 1,
-            blurRadius: 5,
-            offset: const Offset(0, 3),
-          ),
-        ],
-        border: Border.all(color: Colors.grey.shade200, width: 1),
-      ),
-      child: Stack(
-        children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    item.time,
-                    style: TextStyle(
-                      color: Color(item.colorValue),
-                      fontWeight: FontWeight.bold,
-                      fontSize: 14,
-                    ),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    item.title,
-                    style: const TextStyle(
-                      color: Colors.black,
-                      fontWeight: FontWeight.bold,
-                      fontSize: 18,
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(width: 40),
-            ],
-          ),
-          Positioned(
-            top: -10,
-            right: -10,
-            child: canModify
-                ? IconButton(
-                    icon: const Icon(
-                      Icons.delete_outline,
-                      color: Colors.grey,
-                      size: 24,
-                    ),
-                    onPressed: () => _deleteSchedule(item.id),
-                  )
-                : const SizedBox.shrink(),
-          ),
-        ],
-      ),
-    );
-  }
-
-  // 선택된 날짜의 일정 목록 표시
-  Widget _buildScheduleList() {
-    final dateKey = _getDateKey(_selectedDate);
-
-    final schedules = List<CalendarScheduleItem>.from(
-      _schedules[dateKey] ?? [],
-    );
-
-    if (schedules.isEmpty) {
-      return const Padding(
-        padding: EdgeInsets.symmetric(vertical: 20.0),
-        child: Text('등록된 일정이 없습니다.', style: TextStyle(color: Colors.grey)),
-      );
-    }
-
-    // 일정 시작 시간 기준으로 정렬
-    schedules.sort((a, b) {
-      final timeA = a.time.split('-')[0];
-      final timeB = b.time.split('-')[0];
-      return timeA.compareTo(timeB);
-    });
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: schedules
-          .map((item) => _buildScheduleDetailItem(item))
-          .toList(),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final canModify = _canModifySchedule(_selectedDate);
-
-    return Scaffold(
-      backgroundColor: Colors.white,
-      resizeToAvoidBottomInset: false,
-      body: Column(
-        children: <Widget>[
-          const SizedBox(height: 60),
-          const Padding(
-            padding: EdgeInsets.only(bottom: 30.0),
-            child: Text(
-              '당신의 일정을 알려주세요',
-              style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
-            ),
-          ),
-          _buildCalendarHeader(),
-          const SizedBox(height: 20),
-          _buildWeekdays(),
-          const SizedBox(height: 10),
-          _buildDateGrid(),
-          Expanded(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.symmetric(horizontal: 16.0),
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.start,
-                children: [
-                  Container(
-                    width: 50,
-                    height: 4,
-                    decoration: BoxDecoration(
-                      color: Colors.grey.shade300,
-                      borderRadius: BorderRadius.circular(2),
-                    ),
-                    margin: const EdgeInsets.only(top: 20, bottom: 20),
-                  ),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Text(
-                        DateFormat(
-                          'yyyy년 MM월 dd일',
-                          'ko_KR',
-                        ).format(_selectedDate),
-                        style: const TextStyle(
-                          fontSize: 20,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                      if (!canModify)
-                        const Icon(Icons.lock, color: Colors.grey, size: 24),
-                    ],
-                  ),
-                  const Divider(height: 20, thickness: 1),
-                  _buildScheduleList(),
-                  Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 20),
-                    child: GestureDetector(
-                      onTap: canModify
-                          ? _showAddScheduleDialog
-                          : () {
-                              _showAlertDialog(
-                                '알림',
-                                '오늘을 포함하여 이전 날짜에는 일정을 추가하거나 수정할 수 없습니다.',
-                              );
-                            },
-                      child: Icon(
-                        Icons.add_circle,
-                        size: 40,
-                        color: canModify
-                            ? Theme.of(context).primaryColor
-                            : Colors.grey.shade400,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 80),
-                ],
-              ),
-            ),
-          ),
-        ],
-      ),
-      bottomNavigationBar: _buildBottomNavBar(),
-    );
-  }
-
-  // 달력 헤더
+  /// 달력 헤더
   Widget _buildCalendarHeader() {
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16.0),
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          GestureDetector(
-            onTap: _goToPreviousMonth,
-            child: Container(
-              width: 40,
-              height: 40,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                border: Border.all(color: Colors.grey.shade300),
-              ),
-              child: const Icon(
-                Icons.arrow_back_ios_new,
-                size: 20,
-                color: Colors.black54,
-              ),
-            ),
+        children: <Widget>[
+          Text(
+            DateFormat('yyyy년 M월', 'ko_KR').format(_focusedDay),
+            style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
           ),
-          Column(
-            children: [
-              Text(
-                DateFormat('M월', 'ko_KR').format(_currentDate),
-                style: const TextStyle(
-                  fontSize: 20,
-                  fontWeight: FontWeight.bold,
-                ),
+          Row(
+            children: <Widget>[
+              IconButton(
+                icon: const Icon(Icons.chevron_left, size: 28),
+                onPressed: () {
+                  setState(() {
+                    _focusedDay = DateTime(
+                        _focusedDay.year, _focusedDay.month - 1, _focusedDay.day);
+                    _selectedDay = _focusedDay;
+                    _startScheduleListener(); // 월 변경 시 리스너 재시작
+                  });
+                },
               ),
-              Text(
-                '${_currentDate.year}',
-                style: const TextStyle(fontSize: 14, color: Colors.grey),
+              IconButton(
+                icon: const Icon(Icons.chevron_right, size: 28),
+                onPressed: () {
+                  setState(() {
+                    _focusedDay = DateTime(
+                        _focusedDay.year, _focusedDay.month + 1, _focusedDay.day);
+                    _selectedDay = _focusedDay;
+                    _startScheduleListener(); // 월 변경 시 리스너 재시작
+                  });
+                },
               ),
             ],
-          ),
-          GestureDetector(
-            onTap: _goToNextMonth,
-            child: Container(
-              width: 40,
-              height: 40,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                border: Border.all(color: Colors.grey.shade300),
-              ),
-              child: const Icon(
-                Icons.arrow_forward_ios,
-                size: 20,
-                color: Colors.black54,
-              ),
-            ),
           ),
         ],
       ),
     );
   }
 
-  // 달력 요일 표시 (영문 유지)
+  /// 요일 표시 (일월화수목금토)
   Widget _buildWeekdays() {
-    const List<String> weekdays = [
+    const weekdays = [
       'Sun',
       'Mon',
       'Tue',
@@ -827,7 +437,160 @@ class _CalendarScreenState extends State<CalendarScreen> {
     );
   }
 
-  // BottomNavigationBar (영문 라벨 유지)
+  /// 달력 격자 (간단 버전)
+  Widget _buildCalendar() {
+    final firstDayOfMonth = DateTime(_focusedDay.year, _focusedDay.month, 1);
+    final lastDayOfMonth = DateTime(_focusedDay.year, _focusedDay.month + 1, 0);
+    final startWeekday = firstDayOfMonth.weekday % 7; // 0=일, 6=토
+    final daysInMonth = lastDayOfMonth.day;
+
+    final days = <DateTime>[];
+    // 이전 달의 날짜 채우기
+    for (int i = startWeekday; i > 0; i--) {
+      days.add(firstDayOfMonth.subtract(Duration(days: i)));
+    }
+    // 이번 달의 날짜
+    for (int i = 1; i <= daysInMonth; i++) {
+      days.add(DateTime(_focusedDay.year, _focusedDay.month, i));
+    }
+
+    return GridView.builder(
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+        crossAxisCount: 7,
+        childAspectRatio: 1.0,
+      ),
+      itemCount: days.length,
+      itemBuilder: (context, index) {
+        final day = days[index];
+        final isToday = day.year == DateTime.now().year &&
+            day.month == DateTime.now().month &&
+            day.day == DateTime.now().day;
+        final isSelected = day.year == _selectedDay.year &&
+            day.month == _selectedDay.month &&
+            day.day == _selectedDay.day;
+        final isCurrentMonth = day.month == _focusedDay.month;
+
+        return GestureDetector(
+          onTap: () => _onDaySelected(day),
+          child: Container(
+            margin: const EdgeInsets.all(4.0),
+            decoration: BoxDecoration(
+              color: isSelected ? Colors.purple[100] : Colors.transparent,
+              shape: BoxShape.circle,
+              border: isToday
+                  ? Border.all(color: Colors.purple, width: 2)
+                  : null,
+            ),
+            child: Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Text(
+                    '${day.day}',
+                    style: TextStyle(
+                      color: isCurrentMonth
+                          ? (day.weekday == DateTime.sunday ||
+                          day.weekday == DateTime.saturday
+                          ? Colors.grey[700]
+                          : Colors.black)
+                          : Colors.grey[400],
+                      fontWeight: FontWeight.bold,
+                      fontSize: 16,
+                    ),
+                  ),
+                  // 여기에 이벤트 표시 로직을 추가할 수 있지만, 일단 건너뜁니다.
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  /// 선택된 날짜의 일정 목록
+  Widget _buildEventList() {
+    if (_isLoading) {
+      return const Center(child: Padding(
+        padding: EdgeInsets.all(20.0),
+        child: CircularProgressIndicator(),
+      ));
+    }
+
+    // 현재 선택된 날짜의 일정만 필터링하여 가져옵니다.
+    final selectedDateKey = _getDateKey(_selectedDay);
+    final schedulesForSelectedDay = _schedules.containsKey(selectedDateKey)
+        ? _schedules[selectedDateKey]!
+        : [];
+
+    if (schedulesForSelectedDay.isEmpty) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(20.0),
+          child: Text(
+            '선택하신 날짜에 일정이 없습니다.',
+            style: TextStyle(fontSize: 16, color: Colors.grey[600]),
+          ),
+        ),
+      );
+    }
+    return Column(
+      children: schedulesForSelectedDay.map((item) {
+        return Dismissible(
+          key: Key(item.id),
+          direction: DismissDirection.endToStart,
+          onDismissed: (direction) {
+            _deleteSchedule(item.id);
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('${item.title} 일정이 삭제되었습니다.')),
+            );
+          },
+          background: Container(
+            color: Colors.red,
+            alignment: Alignment.centerRight,
+            padding: const EdgeInsets.symmetric(horizontal: 20),
+            child: const Icon(Icons.delete, color: Colors.white),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+            child: Row(
+              children: [
+                Container(
+                  width: 5,
+                  height: 40,
+                  decoration: BoxDecoration(
+                    color: Color(item.colorValue),
+                    borderRadius: BorderRadius.circular(2.5),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        item.title,
+                        style: const TextStyle(
+                            fontSize: 18, fontWeight: FontWeight.bold),
+                      ),
+                      Text(
+                        item.time,
+                        style: TextStyle(fontSize: 14, color: Colors.grey[600]),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      }).toList(),
+    );
+  }
+
+  /// 하단 네비게이션 바
   Widget _buildBottomNavBar() {
     return BottomNavigationBar(
       items: const <BottomNavigationBarItem>[
@@ -845,8 +608,75 @@ class _CalendarScreenState extends State<CalendarScreen> {
       showSelectedLabels: true,
       showUnselectedLabels: true,
       backgroundColor: Colors.white,
-      elevation: 3,
-      type: BottomNavigationBarType.fixed,
+    );
+  }
+
+  /// 네비게이션 아이템 탭 핸들러
+  void _onItemTapped(int index) {
+    if (_selectedIndex == index) return;
+
+    switch (index) {
+      case 0:
+        break;
+      case 1:
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(builder: (context) => const ScheduleScreen()), // 👈 const 유지 가능
+        );
+        break;
+      case 2:
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(builder: (context) => const ProfileScreen()), // 👈 const 유지 가능
+        );
+        break;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.white,
+      appBar: AppBar(
+        title: const Text('개인 일정'),
+        backgroundColor: Colors.white,
+        foregroundColor: Colors.black,
+        elevation: 0,
+        centerTitle: true,
+      ),
+      body: SingleChildScrollView(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            _buildCalendarHeader(),
+            const SizedBox(height: 10),
+            _buildWeekdays(),
+            const Divider(height: 10, thickness: 1, color: Colors.black12),
+            _buildCalendar(),
+            const SizedBox(height: 20),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16.0),
+              child: Text(
+                '${DateFormat('M월 d일', 'ko_KR').format(_selectedDay)}의 일정',
+                style:
+                const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+              ),
+            ),
+            const SizedBox(height: 10),
+            _buildEventList(),
+            const SizedBox(height: 80), // 하단 버튼 공간 확보
+          ],
+        ),
+      ),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: _showAddScheduleDialog,
+        icon: const Icon(Icons.add),
+        label: const Text('일정 추가'),
+        backgroundColor: Colors.purple[300],
+        foregroundColor: Colors.white,
+      ),
+      floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
+      bottomNavigationBar: _buildBottomNavBar(),
     );
   }
 }
