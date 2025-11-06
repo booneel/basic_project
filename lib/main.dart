@@ -3,7 +3,7 @@ import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'package:intl/intl.dart';
 import 'package:intl/date_symbol_data_local.dart';
-import 'dart:async';
+import 'dart:async'; // Timer 및 TimeoutException 사용
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -15,57 +15,69 @@ import 'profile.dart';
 import 'set_calendar.dart';
 import 'wish.dart'; // GoalSettingScreen 임포트
 
+// --- Firebase 인스턴스 ---
+late FirebaseApp _app;
+late FirebaseAuth _auth;
+FirebaseFirestore? _db; // 👈 [핵심 수정] Nullable로 변경하여 LateInitializationError 방지
+String? _userId;
+
 // --- API 및 환경 설정 ---
 class ApiConfig {
-  // 🌟 API Key를 .env 파일에서 로드하도록 수정 (초기화 후 접근 가능)
   static String get GEMINI_API_BASE_URL {
-    // .env 파일의 변수 이름을 GEMINI_API_KEY로 가정
     final apiKey = dotenv.env['GEMINI_API_KEY'] ?? 'YOUR_FALLBACK_KEY';
     return 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=$apiKey';
   }
 }
 
-// 🌟 환경 변수 로딩을 위해 기존 변수들을 제거하고 dotenv에서 직접 읽도록 수정
-
-// 🌟 환경 변수 정의 (dotenv에서 로드할 키)
-// dotenv가 로드된 후 이 변수들이 사용됩니다.
+// 🌟 환경 변수 정의
 final String appId = dotenv.env['APP_ID'] ?? 'default-app-id';
 final Map<String, dynamic> firebaseConfig = jsonDecode(
   dotenv.env['FIREBASE_CONFIG_JSON'] ?? '{}',
 );
 final String? initialAuthToken = dotenv.env['INITIAL_AUTH_TOKEN'];
 
-// Firebase 인스턴스
-late FirebaseApp _app;
-late FirebaseAuth _auth;
-late FirebaseFirestore _db;
-String? _userId;
-
 // ---------------- Firebase 유틸리티 함수 ------------------
 
 Future<void> initializeFirebase() async {
-  // 🌟 firebaseConfig는 이제 dotenv 로드 후 초기화됩니다.
-  if (firebaseConfig.isEmpty) {
-    print("Firebase configuration not found. Skipping initialization.");
+  if (firebaseConfig.isEmpty || firebaseConfig['projectId'] == null) {
+    print(
+      "🚨 Firebase configuration not found or invalid. Skipping initialization.",
+    );
     return;
   }
 
   try {
-    _app = await Firebase.initializeApp(
-      options: FirebaseOptions(
-        // 🌟 환경 변수에서 읽은 값 사용
-        apiKey: firebaseConfig['apiKey'] ?? '',
-        appId: firebaseConfig['appId'] ?? '',
-        messagingSenderId: firebaseConfig['messagingSenderId'] ?? '',
-        projectId: firebaseConfig['projectId'] ?? '',
-      ),
-    );
+    // 🌟 Duplicate App 오류 방지 로직
+    try {
+      if (Firebase.apps.isEmpty || Firebase.app().name != '[DEFAULT]') {
+        _app = await Firebase.initializeApp(
+          options: FirebaseOptions(
+            apiKey: firebaseConfig['apiKey'] as String? ?? '',
+            appId: firebaseConfig['appId'] as String? ?? '',
+            messagingSenderId:
+                firebaseConfig['messagingSenderId'] as String? ?? '',
+            projectId: firebaseConfig['projectId'] as String? ?? '',
+          ),
+        );
+      } else {
+        _app = Firebase.app();
+      }
+    } on FirebaseException catch (e) {
+      if (e.code == 'duplicate-app' || Firebase.apps.isNotEmpty) {
+        _app = Firebase.app();
+        print(
+          "✅ Duplicate app initialization handled. Reusing existing Firebase app.",
+        );
+      } else {
+        rethrow;
+      }
+    }
 
     _auth = FirebaseAuth.instanceFor(app: _app);
-    _db = FirebaseFirestore.instanceFor(app: _app);
+    _db = FirebaseFirestore.instanceFor(app: _app); // 👈 Nullable 필드에 할당
 
     // 인증 처리
-    if (initialAuthToken != null) {
+    if (initialAuthToken != null && initialAuthToken!.isNotEmpty) {
       try {
         await _auth.signInWithCustomToken(initialAuthToken!);
       } catch (e) {
@@ -77,21 +89,32 @@ Future<void> initializeFirebase() async {
     }
 
     _userId = _auth.currentUser?.uid ?? 'anonymous_user';
-    print("Firebase initialized. User ID: $_userId");
+    print("✅ Firebase initialized. User ID: $_userId");
   } catch (e) {
-    print("Firebase initialization failed: $e");
+    print("❌ Firebase initialization failed: $e");
+    // 🌟 구성 오류 시 StateError를 던져 앱 재시작 유도
+    throw StateError(
+      "Critical Firebase initialization failed. Please check your .env configuration JSON carefully.",
+    );
   }
 }
 
-FirebaseFirestore getDb() => _db;
+// 🌟 [핵심 수정] _db가 Nullable이 되었으므로, 초기화 검사를 포함한 getDb()
+FirebaseFirestore getDb() {
+  if (_db == null) {
+    // 초기화가 안된 상태에서 getDb() 호출 시 명시적인 오류 발생
+    throw StateError(
+      "FirebaseFirestore instance is not initialized. Check initializeFirebase() in main.",
+    );
+  }
+  return _db!; // non-null assertion
+}
 
 String getUserId() => _userId ?? 'anonymous_user';
 
 String getScheduleCollectionPath() {
-  // 비공개 데이터 저장 경로: /artifacts/{appId}/users/{userId}/schedules
   return 'artifacts/$appId/users/${getUserId()}/schedules';
 }
-// -----------------------------------------------------------
 
 // 1. 일정 데이터 모델 정의
 class ScheduleItem {
@@ -118,7 +141,7 @@ class ScheduleItem {
       timeStart: json['timeStart'] as String,
       timeEnd: json['timeEnd'] as String,
       title: json['title'] as String,
-      subItems: json['subItems'] != null
+      subItems: json['subItems'] is List
           ? List<String>.from(json['subItems'])
           : null,
       isGoalSchedule: json['isGoalSchedule'] ?? false,
@@ -127,18 +150,29 @@ class ScheduleItem {
   }
 }
 
-// -----------------------------------------------------------
-
+// ---------------- main 함수 (초기화 로직) ----------------
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  // 🌟 .env 파일 로드 (flutter_dotenv 사용)
-  // .env 파일이 프로젝트 루트에 있다고 가정
-  await dotenv.load(fileName: ".env");
-
-  // 한국 로케일 초기화
-  await initializeDateFormatting('ko_KR', null);
-  await initializeFirebase(); // Firebase 초기화
-  runApp(const MyApp());
+  try {
+    await dotenv.load(fileName: ".env");
+    await initializeDateFormatting('ko_KR', null);
+    await initializeFirebase();
+    runApp(const MyApp());
+  } catch (e) {
+    runApp(
+      MaterialApp(
+        home: Scaffold(
+          body: Center(
+            child: Text(
+              '앱 초기화 실패: $e\n.env 파일과 Firebase 설정을 확인하세요.',
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: Colors.red),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class MyApp extends StatelessWidget {
@@ -146,52 +180,31 @@ class MyApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // 🌟 [핵심 수정] FutureBuilder를 사용하여 Firebase 초기화 완료를 보장합니다.
-    return FutureBuilder(
-      future: initializeFirebase(), // initializeFirebase()의 Future를 기다립니다.
-      builder: (context, snapshot) {
-        // 초기화 완료 상태 확인
-        if (snapshot.connectionState == ConnectionState.done) {
-          if (snapshot.hasError) {
-            // 초기화 실패 시 에러 화면 표시
-            return MaterialApp(
-              home: Scaffold(
-                body: Center(
-                  // 🚨 오류 메시지를 명확히 출력하여 최종 원인 진단
-                  child: Text('Firebase 초기화 실패: ${snapshot.error}'),
-                ),
-              ),
-            );
-          }
-          // 🚨 초기화 완료! 이제 _db에 안전하게 접근 가능합니다.
-          return MaterialApp(
-            debugShowCheckedModeBanner: false,
-            theme: ThemeData(
-              fontFamily: 'Roboto',
-              primaryColor: Colors.purple[300],
-              splashFactory: NoSplash.splashFactory,
-            ),
-            home: const GoalSettingScreen(), // 시작 화면
-          );
-        }
-
-        // 초기화 중에는 로딩 화면 표시
-        return const MaterialApp(
-          home: Scaffold(
-            body: Center(
-              child: CircularProgressIndicator(),
-            ),
-          ),
-        );
+    return MaterialApp(
+      debugShowCheckedModeBanner: false,
+      title: 'Goal Planner App',
+      theme: ThemeData(
+        fontFamily: 'Roboto',
+        primaryColor: Colors.purple[300],
+        splashFactory: NoSplash.splashFactory,
+        useMaterial3: true,
+      ),
+      initialRoute: '/',
+      routes: {
+        '/': (context) => const GoalSettingScreen(),
+        '/schedule': (context) => const ScheduleScreen(),
+        '/calendar': (context) => const CalendarScreen(),
+        '/profile': (context) => const ProfileScreen(),
       },
     );
   }
 }
 
-class ScheduleScreen extends StatefulWidget {
-  final String? goalKeyword; // diet.dart에서 전달받은 목표 키워드
+// ---------------- ScheduleScreen 위젯 (메인 스케줄 보기 및 저장) ----------------
 
-  // 키워드가 전달되면 LLM 스케줄 생성, 그렇지 않으면 기본 스케줄 표시
+class ScheduleScreen extends StatefulWidget {
+  final String? goalKeyword; // 이제 이 값은 무시됩니다.
+
   const ScheduleScreen({super.key, this.goalKeyword});
 
   @override
@@ -203,20 +216,163 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
   static const Color pastBgColor = Color(0xFF616161);
   static const Color futureBgColor = Color(0xFFF7F7F7);
 
-  late List<ScheduleItem> _scheduleList;
+  List<ScheduleItem> _scheduleList = [];
   Timer? _timer;
-  int _selectedIndex = 1; // Home screen is active by default
+  int _selectedIndex = 1;
   bool _isLoading = false;
+
+  String _getTodayDateKey() {
+    return DateFormat('yyyy-MM-dd').format(DateTime.now());
+  }
+
+  void _showSnackBar(String message, {bool isError = false}) {
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(message),
+          backgroundColor: isError ? Colors.redAccent : Colors.green,
+        ),
+      );
+    }
+  }
+
+  void _loadDefaultSchedule() {
+    if (!mounted) return;
+    setState(() {
+      _scheduleList = [
+        ScheduleItem(
+          timeStart: '09:00',
+          timeEnd: '10:00',
+          title: '기상 및 아침 루틴',
+          isGoalSchedule: false,
+        ),
+        ScheduleItem(
+          timeStart: '10:00',
+          timeEnd: '12:00',
+          title: '업무/학습 집중 시간',
+          isGoalSchedule: false,
+        ),
+        ScheduleItem(
+          timeStart: '12:00',
+          timeEnd: '13:00',
+          title: '점심 식사',
+          isGoalSchedule: false,
+        ),
+        ScheduleItem(
+          timeStart: '13:00',
+          timeEnd: '18:00',
+          title: '핵심 업무 처리',
+          isGoalSchedule: false,
+        ),
+        ScheduleItem(
+          timeStart: '18:00',
+          timeEnd: '19:00',
+          title: '운동 시간',
+          isGoalSchedule: false,
+        ),
+        ScheduleItem(
+          timeStart: '19:00',
+          timeEnd: '20:00',
+          title: '저녁 식사 및 휴식',
+          isGoalSchedule: false,
+        ),
+      ];
+    });
+  }
+
+  Future<void> _saveScheduleToFirestore(List<ScheduleItem> scheduleList) async {
+    if (scheduleList.isEmpty) return;
+
+    try {
+      final todayKey = _getTodayDateKey();
+      final collectionPath = getScheduleCollectionPath();
+
+      final List<Map<String, dynamic>> scheduleJsonList = scheduleList.map((
+        item,
+      ) {
+        return {
+          'timeStart': item.timeStart,
+          'timeEnd': item.timeEnd,
+          'title': item.title,
+          'subItems': item.subItems,
+          'isChecked': item.isChecked,
+          'showCheckbox': item.showCheckbox,
+          'isGoalSchedule': item.isGoalSchedule,
+        };
+      }).toList();
+
+      await getDb().collection(collectionPath).doc(todayKey).set({
+        'items': scheduleJsonList,
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+    } catch (e) {
+      print("❌ DB 저장 실패: $e");
+      // DB 저장 실패 시에는 스케줄이 메모리에 있으므로 심각한 오류가 아니면 무시할 수 있습니다.
+    }
+  }
+
+  Future<void> _saveCurrentScheduleToFirestore() async {
+    await _saveScheduleToFirestore(_scheduleList);
+  }
+
+  // 🌟 [핵심] LLM 생성 로직을 제거하고 순수하게 DB 로드만 수행
+  Future<void> _loadSchedulesFromFirestore() async {
+    if (!_isLoading)
+      setState(() {
+        _isLoading = true;
+      });
+
+    try {
+      final todayKey = _getTodayDateKey();
+      final docSnapshot = await getDb()
+          .collection(getScheduleCollectionPath())
+          .doc(todayKey)
+          .get();
+
+      if (docSnapshot.exists && docSnapshot.data() != null) {
+        final data = docSnapshot.data()!;
+        final List<dynamic>? scheduleData = data['items'] as List<dynamic>?;
+
+        if (scheduleData != null) {
+          if (!mounted) return;
+          setState(() {
+            _scheduleList = scheduleData
+                .map(
+                  (item) => ScheduleItem.fromJson(item as Map<String, dynamic>),
+                )
+                .toList();
+          });
+          print("✅ Firestore에서 오늘의 일정 ${_scheduleList.length}개를 로드했습니다.");
+        } else {
+          _loadDefaultSchedule();
+        }
+      } else {
+        _loadDefaultSchedule();
+      }
+    } catch (e) {
+      // DB 연결 오류 (StateError 포함) 시 사용자에게 메시지 표시
+      _showSnackBar('일정 로드 중 오류가 발생했습니다: $e', isError: true);
+      _loadDefaultSchedule();
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
+    }
+  }
+
+  // 🌟 [제거] _generateSchedule 함수는 diet.dart로 이동했으므로, main.dart에서는 삭제합니다.
 
   @override
   void initState() {
     super.initState();
     _scheduleList = [];
-    if (widget.goalKeyword != null) {
-      _generateSchedule(widget.goalKeyword!);
-    } else {
-      _loadDefaultSchedule();
-    }
+
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      // 🌟 [핵심 수정] 키워드 인자 무시, 무조건 DB 로드 시도
+      await _loadSchedulesFromFirestore();
+    });
 
     _timer = Timer.periodic(const Duration(seconds: 10), (timer) {
       if (mounted) {
@@ -234,158 +390,28 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
   void _onItemTapped(int index) {
     if (_selectedIndex == index) return;
 
-    // pushReplacement를 사용하여 깔끔하게 화면 전환
+    String routeName = '/';
+
     switch (index) {
       case 0:
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(builder: (context) => const CalendarScreen()),
-        );
+        routeName = '/calendar';
         break;
       case 1:
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(builder: (context) => const ScheduleScreen()),
-        );
+        routeName = '/';
         break;
       case 2:
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(builder: (context) => const ProfileScreen()),
-        );
+        routeName = '/profile';
         break;
     }
-  }
 
-  // 기본 스케줄 로드 (한국어)
-  void _loadDefaultSchedule() {
-    setState(() {
-      _scheduleList = [
-        ScheduleItem(timeStart: '09:00', timeEnd: '10:00', title: '기상 및 아침 루틴'),
-        ScheduleItem(
-          timeStart: '10:00',
-          timeEnd: '12:00',
-          title: '업무/학습 집중 시간',
-        ),
-        ScheduleItem(timeStart: '12:00', timeEnd: '13:00', title: '점심 식사'),
-        ScheduleItem(timeStart: '13:00', timeEnd: '18:00', title: '핵심 업무 처리'),
-        ScheduleItem(timeStart: '18:00', timeEnd: '19:00', title: '운동 시간'),
-        ScheduleItem(timeStart: '19:00', timeEnd: '20:00', title: '저녁 식사 및 휴식'),
-      ];
-    });
-  }
-
-  // LLM을 호출하여 목표 기반 스케줄 생성
-  Future<void> _generateSchedule(String goalKeyword) async {
-    setState(() {
-      _isLoading = true;
-      _scheduleList = []; // 기존 스케줄 초기화
-    });
-
-    try {
-      const systemPrompt =
-          "당신은 일일 스케줄 생성 전문가입니다. 사용자의 목표 키워드를 바탕으로 구체적이고 실현 가능한 하루(09:00 ~ 21:00) 스케줄을 5~7개의 항목으로 구성하여 JSON 객체 배열로 반환하세요. 'isGoalSchedule' 필드는 true로 설정해야 합니다. 모든 스케줄 항목의 'title'과 'subItems'는 한국어로 작성되어야 합니다.";
-
-      final userQuery = "다음 목표 키워드에 맞는 하루 스케줄을 생성해 주세요: '$goalKeyword'";
-
-      final payload = {
-        'contents': [
-          {
-            'parts': [
-              {'text': userQuery},
-            ],
-          },
-        ],
-        'systemInstruction': {
-          'parts': [
-            {'text': systemPrompt},
-          ],
-        },
-        'generationConfig': {
-          'responseMimeType': 'application/json',
-          'responseSchema': {
-            'type': 'ARRAY',
-            'items': {
-              'type': 'OBJECT',
-              'properties': {
-                'timeStart': {
-                  'type': 'STRING',
-                  'description': '시작 시간 (예: HH:MM)',
-                },
-                'timeEnd': {
-                  'type': 'STRING',
-                  'description': '종료 시간 (예: HH:MM)',
-                },
-                'title': {'type': 'STRING', 'description': '스케줄 제목 (한국어)'},
-                'subItems': {
-                  'type': 'ARRAY',
-                  'items': {'type': 'STRING'},
-                  'description': '구체적인 할 일 목록 (한국어, 선택 사항)',
-                },
-                'isGoalSchedule': {
-                  'type': 'BOOLEAN',
-                  'description': '이 스케줄이 목표 생성 스케줄임을 표시',
-                },
-              },
-              'required': ['timeStart', 'timeEnd', 'title'],
-            },
-          },
-        },
-      };
-
-      // 🌟 수정된 ApiConfig.GEMINI_API_BASE_URL 속성을 사용하여 API Key를 포함
-      final response = await http.post(
-        Uri.parse(ApiConfig.GEMINI_API_BASE_URL),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode(payload),
-      );
-
-      if (response.statusCode == 200) {
-        final result = jsonDecode(utf8.decode(response.bodyBytes));
-        final jsonText =
-            result['candidates']?[0]?['content']?['parts']?[0]?['text'];
-
-        if (jsonText != null) {
-          final List<dynamic> scheduleData = jsonDecode(jsonText);
-          setState(() {
-            _scheduleList = scheduleData
-                .map(
-                  (item) => ScheduleItem.fromJson(item as Map<String, dynamic>),
-                )
-                .toList();
-          });
-        } else {
-          _showSnackBar('LLM 응답에서 유효한 스케줄 데이터를 찾을 수 없습니다.');
-          _loadDefaultSchedule();
-        }
-      } else {
-        _showSnackBar('스케줄 생성 실패: 상태 코드 ${response.statusCode}');
-        _loadDefaultSchedule();
-      }
-    } catch (e) {
-      _showSnackBar('스케줄 생성 중 오류가 발생했습니다: $e');
-      _loadDefaultSchedule();
-    } finally {
-      setState(() {
-        _isLoading = false;
-      });
+    if (_selectedIndex != index) {
+      Navigator.pushReplacementNamed(context, routeName);
     }
   }
-
-  void _showSnackBar(String message) {
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(message), backgroundColor: Colors.redAccent),
-      );
-    }
-  }
-
-  // --- 시간 계산 및 상태 함수 ---
 
   DateTime _parseTime(String time, DateTime now) {
-    // 시간을 파싱하여 오늘 날짜와 결합된 DateTime 객체를 반환합니다.
     final parts = time.split(':');
-    if (parts.length != 2) return now; // 파싱 실패 시 현재 시간 반환
+    if (parts.length != 2) return now;
     final hour = int.tryParse(parts[0]) ?? now.hour;
     final minute = int.tryParse(parts[1]) ?? now.minute;
     return DateTime(now.year, now.month, now.day, hour, minute);
@@ -393,24 +419,17 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
 
   bool _isPastTime(String timeEnd, DateTime now) {
     if (timeEnd.isEmpty) return false;
-    // 종료 시간이 오늘 날짜의 해당 시간보다 이전인지 확인
     return now.isAfter(_parseTime(timeEnd, now));
   }
 
   bool _isCurrentSchedule(String timeStart, String timeEnd, DateTime now) {
     final startTime = _parseTime(timeStart, now);
-    // 종료 시간이 비어있으면 자정(23:59)으로 간주
     final endTime = _parseTime(timeEnd.isEmpty ? '23:59' : timeEnd, now);
-
-    // 현재 시간이 시작 시간과 종료 시간 사이인지 확인
     return now.isAfter(startTime) && now.isBefore(endTime);
   }
 
-  // --- UI 빌드 함수 ---
-
   Widget _buildScheduleItem({required ScheduleItem item, required int index}) {
     final DateTime now = DateTime.now();
-    // ScheduleItem에는 end, start 필드가 없으므로 timeEnd, timeStart 사용
     final bool isPast = _isPastTime(item.timeEnd, now);
     final bool isCurrent = _isCurrentSchedule(
       item.timeStart,
@@ -493,7 +512,6 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        // LLM 생성 스케줄일 경우 아이콘 추가
                         if (item.isGoalSchedule)
                           Padding(
                             padding: const EdgeInsets.only(right: 6.0),
@@ -518,13 +536,15 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
                             height: 24,
                             child: Checkbox(
                               value: item.isChecked,
-                              // 과거 시간일 경우 체크박스 비활성화 (null)
                               onChanged: isPast
                                   ? null
-                                  : (bool? newValue) => setState(
-                                      () => _scheduleList[index].isChecked =
-                                          newValue!,
-                                    ),
+                                  : (bool? newValue) {
+                                      setState(
+                                        () => _scheduleList[index].isChecked =
+                                            newValue!,
+                                      );
+                                      _saveCurrentScheduleToFirestore();
+                                    },
                               activeColor: isCurrent
                                   ? Colors.white
                                   : Colors.black,
@@ -536,8 +556,7 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
                                   if (states.contains(WidgetState.selected))
                                     return isCurrent
                                         ? Colors.white
-                                        : Colors
-                                              .black; // 현재 시간이면 흰색 체크, 아니면 검은색
+                                        : Colors.black;
                                   return Colors.white;
                                 },
                               ),
@@ -587,18 +606,9 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
   Widget _buildBottomNavBar() {
     return BottomNavigationBar(
       items: const <BottomNavigationBarItem>[
-        BottomNavigationBarItem(
-          icon: Icon(Icons.calendar_today),
-          label: 'Schedule', // 원본 유지
-        ),
-        BottomNavigationBarItem(
-          icon: Icon(Icons.home),
-          label: 'Home', // 원본 유지
-        ),
-        BottomNavigationBarItem(
-          icon: Icon(Icons.person),
-          label: 'profile', // 원본 유지
-        ),
+        BottomNavigationBarItem(icon: Icon(Icons.calendar_today), label: '캘린더'),
+        BottomNavigationBarItem(icon: Icon(Icons.home), label: '홈'),
+        BottomNavigationBarItem(icon: Icon(Icons.person), label: '프로필'),
       ],
       currentIndex: _selectedIndex,
       onTap: _onItemTapped,
@@ -686,7 +696,7 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
                       color: Colors.green[700],
                       fontWeight: FontWeight.bold,
                     ),
-                  ), // 한국어
+                  ),
                 ),
               ],
             ),
@@ -705,8 +715,8 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
                         color: Colors.black87,
                       ),
                     ),
-                  ), // 한국어
-                  Expanded(
+                  ),
+                  const Expanded(
                     child: Text(
                       '할 일',
                       style: TextStyle(
@@ -715,7 +725,7 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
                         color: Colors.black87,
                       ),
                     ),
-                  ), // 한국어
+                  ),
                   Icon(Icons.sort, color: Colors.grey[700]),
                 ],
               ),
@@ -729,7 +739,7 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
                     children: [
                       CircularProgressIndicator(),
                       SizedBox(height: 15),
-                      Text("목표 기반 스케줄을 생성 중입니다..."),
+                      Text("일정을 불러오는 중입니다..."),
                     ],
                   ),
                 ),
