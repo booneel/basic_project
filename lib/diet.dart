@@ -1,9 +1,12 @@
+// [diet.dart]
+
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'dart:async'; // TimeoutException 사용
 import 'package:intl/intl.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart'; // ⚠️ [추가] 목표 텍스트 저장에 사용
 
 import 'main.dart'; // ScheduleScreen, ApiConfig, getDb, getScheduleCollectionPath, ScheduleItem 임포트
 import 'wish.dart'; // GoalKeyword 임포트
@@ -149,8 +152,6 @@ class _ScheduleGeneratorScreenState extends State<ScheduleGeneratorScreen> {
   String? _error;
   List<dynamic> _generatedScheduleData = []; // ScheduleItem 대신 JSON 데이터 사용
 
-  // Note: main.dart의 ScheduleItem 클래스가 필요합니다.
-
   @override
   void initState() {
     super.initState();
@@ -164,11 +165,29 @@ class _ScheduleGeneratorScreenState extends State<ScheduleGeneratorScreen> {
     await _generateSchedule(goalKeyword); // 1. LLM 스케줄 생성
 
     if (_generatedScheduleData.isNotEmpty && _error == null) {
+      await _saveGoalText(); // ⚠️ [추가] 1.5. 목표 텍스트 저장
       await _saveScheduleAndNavigate(); // 2. DB 저장 및 이동
     } else {
       if (mounted) setState(() => _isLoading = false);
     }
   }
+
+  // ⚠️ [추가] Firestore에 목표 텍스트만 저장하는 함수
+  Future<void> _saveGoalText() async {
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user != null) {
+        await FirebaseFirestore.instance.collection('users').doc(user.uid).set(
+          {'currentGoalText': widget.goalKeyword},
+          SetOptions(merge: true),
+        );
+      }
+    } catch (e) {
+      print("❌ 목표 텍스트 저장 실패: $e");
+      // 목표 텍스트 저장은 치명적이지 않으므로 오류는 무시하고 계속 진행
+    }
+  }
+  // ------------------------------------------------------------------
 
   String _getTodayDateKey() {
     return DateFormat('yyyy-MM-dd').format(DateTime.now());
@@ -176,6 +195,7 @@ class _ScheduleGeneratorScreenState extends State<ScheduleGeneratorScreen> {
 
   // 🌟 LLM을 호출하여 목표 기반 스케줄 생성 (30초 타임아웃 적용)
   Future<void> _generateSchedule(String goalKeyword) async {
+    // ... (기존 LLM 로직 유지)
     try {
       const systemPrompt =
           "당신은 일일 스케줄 생성 전문가입니다. 사용자의 목표 키워드를 바탕으로 구체적이고 실현 가능한 하루(09:00 ~ 21:00) 스케줄을 5~7개의 항목으로 구성하여 JSON 객체 배열로 반환하세요. 'isGoalSchedule' 필드는 true로 설정해야 합니다. 모든 스케줄 항목의 'title'과 'subItems'는 한국어로 작성되어야 합니다.";
@@ -230,16 +250,16 @@ class _ScheduleGeneratorScreenState extends State<ScheduleGeneratorScreen> {
 
       final response = await http
           .post(
-            Uri.parse(ApiConfig.GEMINI_API_BASE_URL),
-            headers: {'Content-Type': 'application/json'},
-            body: jsonEncode(payload),
-          )
+        Uri.parse(ApiConfig.GEMINI_API_BASE_URL),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode(payload),
+      )
           .timeout(const Duration(seconds: 30)); // 🌟 30초 타임아웃 적용
 
       if (response.statusCode == 200) {
         final result = jsonDecode(utf8.decode(response.bodyBytes));
         final jsonText =
-            result['candidates']?[0]?['content']?['parts']?[0]?['text'];
+        result['candidates']?[0]?['content']?['parts']?[0]?['text'];
 
         if (jsonText != null) {
           _generatedScheduleData = jsonDecode(jsonText); // JSON 데이터 저장
@@ -273,28 +293,25 @@ class _ScheduleGeneratorScreenState extends State<ScheduleGeneratorScreen> {
       // ScheduleItem 객체 대신 바로 JSON 데이터 리스트를 저장
       final List<Map<String, dynamic>> scheduleJsonList = _generatedScheduleData
           .map((item) {
-            // LLM에서 받은 데이터에 isChecked, showCheckbox 기본값 추가
-            final map = item as Map<String, dynamic>;
-            map['isChecked'] = false;
-            map['showCheckbox'] = true;
-            return map;
-          })
+        // LLM에서 받은 데이터에 isChecked, showCheckbox 기본값 추가
+        final map = item as Map<String, dynamic>;
+        map['isChecked'] = false;
+        map['showCheckbox'] = true;
+        return map;
+      })
           .toList();
 
       await getDb() // main.dart의 getDb() 사용
           .collection(collectionPath)
           .doc(todayKey)
           .set({
-            'items': scheduleJsonList,
-            'updatedAt': FieldValue.serverTimestamp(),
-          });
+        'items': scheduleJsonList,
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
 
       if (mounted) {
-        // 저장 후 ScheduleScreen으로 이동 (키워드 없이 이동)
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(builder: (context) => const ScheduleScreen()),
-        );
+        // 저장 후 ScheduleScreen으로 이동 (Named Route 사용)
+        Navigator.pushReplacementNamed(context, '/schedule'); // 👈 Named Route 사용
       }
     } catch (e) {
       if (mounted) {
@@ -354,12 +371,8 @@ class _ScheduleGeneratorScreenState extends State<ScheduleGeneratorScreen> {
                 const SizedBox(height: 30),
                 ElevatedButton(
                   onPressed: () {
-                    Navigator.pushReplacement(
-                      context,
-                      MaterialPageRoute(
-                        builder: (context) => const ScheduleScreen(),
-                      ),
-                    );
+                    // ⚠️ [수정] Named Route 사용
+                    Navigator.pushReplacementNamed(context, '/schedule');
                   },
                   child: const Text('메인 화면으로 돌아가기'),
                 ),

@@ -121,7 +121,7 @@ class _GoalSettingScreenState extends State<GoalSettingScreen> {
       if (response.statusCode == 200) {
         final result = jsonDecode(utf8.decode(response.bodyBytes));
         final jsonText =
-            result['candidates']?[0]?['content']?['parts']?[0]?['text'];
+        result['candidates']?[0]?['content']?['parts']?[0]?['text'];
 
         if (jsonText != null) {
           final List<dynamic> keywordData = jsonDecode(jsonText);
@@ -233,20 +233,20 @@ class _GoalSettingScreenState extends State<GoalSettingScreen> {
                           ),
                           child: _isLoading
                               ? const SizedBox(
-                                  height: 24,
-                                  width: 24,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 3,
-                                    color: Colors.black,
-                                  ),
-                                )
+                            height: 24,
+                            width: 24,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 3,
+                              color: Colors.black,
+                            ),
+                          )
                               : const Text(
-                                  '다음 (목표 분석)',
-                                  style: TextStyle(
-                                    fontSize: 20,
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                ),
+                            '다음 (목표 분석)',
+                            style: TextStyle(
+                              fontSize: 20,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
                         ),
                         const SizedBox(height: 10),
                         Text(

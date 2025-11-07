@@ -1,9 +1,11 @@
-import 'package:flutter/material.dart';
-import 'main.dart'; // ScheduleScreen 임포트
-import 'set_calendar.dart'; // CalendarScreen 임포트
-import 'wish.dart'; // GoalSettingScreen 임포트
+// [profile.dart]
 
-// main.dart에서 실행되므로 main 함수는 제거하고 ProfileScreen만 남김
+import 'package:flutter/material.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+
+import 'main.dart'; // getDb, getUserId 임포트
+import 'login.dart'; // LoginPage 임포트
 
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
@@ -15,25 +17,100 @@ class ProfileScreen extends StatefulWidget {
 class _ProfileScreenState extends State<ProfileScreen> {
   int _selectedIndex = 2; // Profile screen is active by default
 
+  // ⚠️ [수정] 사용자 및 목표 데이터를 저장할 변수
+  String _userName = '이백수 (임시 사용자)';
+  String _userEmail = 'test_user@goalapp.com';
+  String _currentGoal = '목표 로딩 중...'; // 초기값 변경
+  String _goalDuration = '1일'; // ⚠️ [추가] 진행 기간 초기값 (요청 사항 반영)
+  bool _isLoading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _fetchUserData();
+  }
+
+  // ⚠️ [수정] 사용자 데이터 및 목표 로드 함수
+  Future<void> _fetchUserData() async {
+    setState(() {
+      _isLoading = true;
+    });
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null || user.isAnonymous) {
+        setState(() {
+          _userName = '익명 사용자';
+          _userEmail = '로그인 필요';
+          _isLoading = false;
+        });
+        return;
+      }
+
+      final docSnapshot = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.uid)
+          .get();
+
+      if (docSnapshot.exists && docSnapshot.data() != null) {
+        final data = docSnapshot.data()!;
+        setState(() {
+          _userName = data['name'] ?? '이름 없음';
+          _userEmail = data['email'] ?? user.email ?? '이메일 없음';
+
+          // ⚠️ [수정] Firestore에서 목표 텍스트 로드 (currentGoalText 필드 가정)
+          _currentGoal = data['currentGoalText'] ?? '목표 미설정';
+          // ⚠️ [수정] 진행 기간을 '1일'로 초기화
+          _goalDuration = '1일';
+          _isLoading = false;
+        });
+      } else {
+        setState(() {
+          _userEmail = user.email ?? '이메일 정보 없음';
+          _currentGoal = '목표 미설정';
+          _goalDuration = '1일';
+          _isLoading = false;
+        });
+      }
+    } catch (e) {
+      print("Error fetching user data: $e");
+      setState(() {
+        _isLoading = false;
+      });
+    }
+  }
+
+  // ⚠️ [수정] 로그아웃 함수
+  Future<void> _logout() async {
+    try {
+      // 1. Firebase 로그아웃을 요청하고 완료될 때까지 기다립니다.
+      await FirebaseAuth.instance.signOut();
+
+      // 2. ⚠️ [삭제] 명시적인 화면 이동 코드를 제거합니다.
+      //    signOut()이 완료되면 login.dart의 MyApp에 있는 StreamBuilder가
+      //    이를 감지하고 자동으로 LoginPage로 전환하므로 별도의 Navigator 호출이 필요 없습니다.
+
+    } catch (e) {
+      print("Logout Error: $e");
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('로그아웃 실패: $e')),
+        );
+      }
+    }
+  }
+
   void _onItemTapped(int index) {
     if (_selectedIndex == index) return;
 
-    // pushReplacement를 사용하여 깔끔하게 화면 전환
+    // ⚠️ [핵심 수정] Named Route 사용
     switch (index) {
       case 0:
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(builder: (context) => const CalendarScreen()),
-        );
+        Navigator.pushReplacementNamed(context, '/calendar');
         break;
       case 1:
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(builder: (context) => const ScheduleScreen()),
-        );
+        Navigator.pushReplacementNamed(context, '/schedule');
         break;
       case 2:
-        // Already on the Profile screen
         break;
     }
   }
@@ -43,7 +120,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
     return Scaffold(
       backgroundColor: Colors.grey[100],
       body: SafeArea(
-        child: Padding(
+        child: _isLoading
+            ? const Center(child: CircularProgressIndicator())
+            : Padding(
           padding: const EdgeInsets.all(16.0),
           child: Column(
             children: [
@@ -60,6 +139,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
   }
 
+  // ⚠️ [수정] '목표 재설정' 버튼이 제거된 프로필 카드 (데이터 반영)
   Widget _buildProfileCard() {
     return Container(
       padding: const EdgeInsets.all(16.0),
@@ -81,61 +161,35 @@ class _ProfileScreenState extends State<ProfileScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text(
-                  '이백수 (임시 사용자)',
-                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                // 로드된 사용자 이름
+                Text(
+                  _userName,
+                  style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
                 ),
-                const Text(
-                  'test_user@goalapp.com',
-                  style: TextStyle(fontSize: 14, color: Colors.grey),
+                // 로드된 이메일
+                Text(
+                  _userEmail,
+                  style: const TextStyle(fontSize: 14, color: Colors.grey),
                 ),
                 const SizedBox(height: 10),
                 const Text(
                   '현재 목표',
                   style: TextStyle(fontSize: 13, color: Colors.grey),
                 ),
-                const Text(
-                  '맞춤형 목표 진행 중',
-                  style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
-                ),
-                const SizedBox(height: 4),
-                GestureDetector(
-                  onTap: () {
-                    Navigator.pushReplacement(
-                      // pushReplacement 사용
-                      context,
-                      MaterialPageRoute(
-                        builder: (context) => const GoalSettingScreen(),
-                      ),
-                    );
-                  },
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 12,
-                      vertical: 4,
-                    ),
-                    decoration: BoxDecoration(
-                      color: Colors.blue[100],
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: const Text(
-                      '목표 재설정',
-                      style: TextStyle(
-                        fontSize: 11,
-                        color: Colors.blue,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  ),
+                // ⚠️ [수정] 로드된 목표 정보 사용
+                Text(
+                  _currentGoal,
+                  style: const TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
                 ),
                 const SizedBox(height: 10),
                 const Text(
                   '진행기간',
                   style: TextStyle(fontSize: 13, color: Colors.grey),
                 ),
-                const Text(
-                  'N/A',
-                  style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
+                // ⚠️ [수정] 진행 기간 사용
+                Text(
+                  _goalDuration,
+                  style: const TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
                 ),
               ],
             ),
@@ -148,10 +202,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 
   Widget _buildLogoutButton() {
+    // ⚠️ [수정] 로그아웃 함수 연결
     return ElevatedButton(
-      onPressed: () {
-        // 실제 로그아웃 로직 (Firebase Auth) 필요
-      },
+      onPressed: _isLoading ? null : _logout,
       style: ElevatedButton.styleFrom(
         backgroundColor: Colors.redAccent,
         minimumSize: const Size(double.infinity, 50),
@@ -168,6 +221,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
   }
 
+  // '인증 상태'를 '목표 재설정' 버튼으로 교체한 통계 그리드 (원래 디자인 유지)
   Widget _buildStatsGrid() {
     return Expanded(
       child: GridView.count(
@@ -176,21 +230,59 @@ class _ProfileScreenState extends State<ProfileScreen> {
         mainAxisSpacing: 16,
         childAspectRatio: 1.0,
         children: [
-          _buildStatCard(
-            icon: Icons.vpn_key,
-            title: '인증 상태',
-            value: 'OK',
-            isProgress: false,
-          ),
+          _buildGoalResetCard(), // '인증 상태' 대신 '목표 재설정' 카드
           _buildStatCard(
             color: Colors.green[300],
             title: '목표 달성률',
-            value: '27%',
+            value: '0%',
             isProgress: true,
           ),
-          _buildStatCard(title: '퍼펙트 데이', value: '7', isProgress: false),
-          _buildStatCard(title: '평균 달성률', value: '70%', isProgress: false),
+          _buildStatCard(title: '퍼펙트 데이', value: '0', isProgress: false),
+          _buildStatCard(title: '평균 달성률', value: '0%', isProgress: false),
         ],
+      ),
+    );
+  }
+
+  // '목표 재설정' 기능을 하는 새로운 카드 위젯 (원래 디자인 유지)
+  Widget _buildGoalResetCard() {
+    return GestureDetector(
+      onTap: () {
+        Navigator.pushReplacementNamed(context, '/goal'); // ⚠️ [수정] Named Route 사용
+      },
+      child: Container(
+        padding: const EdgeInsets.all(16.0),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(16),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.grey.withOpacity(0.1),
+              spreadRadius: 1,
+              blurRadius: 5,
+            ),
+          ],
+        ),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: const [
+            Icon(
+              Icons.edit_note,
+              size: 60,
+              color: Colors.black,
+            ),
+            SizedBox(height: 8),
+            Text(
+              '목표 재설정',
+              style: TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.bold,
+                color: Colors.black54,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

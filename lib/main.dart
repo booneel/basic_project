@@ -55,7 +55,7 @@ Future<void> initializeFirebase() async {
             apiKey: firebaseConfig['apiKey'] as String? ?? '',
             appId: firebaseConfig['appId'] as String? ?? '',
             messagingSenderId:
-                firebaseConfig['messagingSenderId'] as String? ?? '',
+            firebaseConfig['messagingSenderId'] as String? ?? '',
             projectId: firebaseConfig['projectId'] as String? ?? '',
           ),
         );
@@ -288,8 +288,8 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
       final collectionPath = getScheduleCollectionPath();
 
       final List<Map<String, dynamic>> scheduleJsonList = scheduleList.map((
-        item,
-      ) {
+          item,
+          ) {
         return {
           'timeStart': item.timeStart,
           'timeEnd': item.timeEnd,
@@ -339,7 +339,7 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
             _scheduleList = scheduleData
                 .map(
                   (item) => ScheduleItem.fromJson(item as Map<String, dynamic>),
-                )
+            )
                 .toList();
           });
           print("✅ Firestore에서 오늘의 일정 ${_scheduleList.length}개를 로드했습니다.");
@@ -539,18 +539,18 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
                               onChanged: isPast
                                   ? null
                                   : (bool? newValue) {
-                                      setState(
-                                        () => _scheduleList[index].isChecked =
-                                            newValue!,
-                                      );
-                                      _saveCurrentScheduleToFirestore();
-                                    },
+                                setState(
+                                      () => _scheduleList[index].isChecked =
+                                  newValue!,
+                                );
+                                _saveCurrentScheduleToFirestore();
+                              },
                               activeColor: isCurrent
                                   ? Colors.white
                                   : Colors.black,
                               checkColor: bgColor,
                               fillColor: WidgetStateProperty.resolveWith<Color>(
-                                (Set<WidgetState> states) {
+                                    (Set<WidgetState> states) {
                                   if (states.contains(WidgetState.disabled))
                                     return Colors.transparent;
                                   if (states.contains(WidgetState.selected))
@@ -565,8 +565,8 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
                                 color: isPast
                                     ? Colors.transparent
                                     : (isCurrent
-                                          ? Colors.white
-                                          : Colors.black26),
+                                    ? Colors.white
+                                    : Colors.black26),
                               ),
                             ),
                           ),
@@ -580,16 +580,16 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
                           children: item.subItems!
                               .map(
                                 (subItem) => Text(
-                                  '• $subItem',
-                                  style: TextStyle(
-                                    fontSize: 14,
-                                    color: textColor.withAlpha(178),
-                                    decoration: isPast && item.isChecked
-                                        ? TextDecoration.lineThrough
-                                        : null,
-                                  ),
-                                ),
-                              )
+                              '• $subItem',
+                              style: TextStyle(
+                                fontSize: 14,
+                                color: textColor.withAlpha(178),
+                                decoration: isPast && item.isChecked
+                                    ? TextDecoration.lineThrough
+                                    : null,
+                              ),
+                            ),
+                          )
                               .toList(),
                         ),
                       ),
@@ -606,9 +606,9 @@ class _ScheduleScreenState extends State<ScheduleScreen> {
   Widget _buildBottomNavBar() {
     return BottomNavigationBar(
       items: const <BottomNavigationBarItem>[
-        BottomNavigationBarItem(icon: Icon(Icons.calendar_today), label: '캘린더'),
-        BottomNavigationBarItem(icon: Icon(Icons.home), label: '홈'),
-        BottomNavigationBarItem(icon: Icon(Icons.person), label: '프로필'),
+        BottomNavigationBarItem(icon: Icon(Icons.calendar_today), label: 'Schedule'),
+        BottomNavigationBarItem(icon: Icon(Icons.home), label: 'Home'),
+        BottomNavigationBarItem(icon: Icon(Icons.person), label: 'profile'),
       ],
       currentIndex: _selectedIndex,
       onTap: _onItemTapped,

@@ -1,17 +1,39 @@
 import 'package:flutter/material.dart';
 import 'package:intl/date_symbol_data_local.dart';
-// import 'package:google_sign_in/google_sign_in.dart'; // <-- 삭제됨
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
+
+import 'main.dart'; // initializeFirebase, ScheduleScreen 임포트
 import 'signup.dart';
-import 'wish.dart';
+import 'wish.dart'; // GoalSettingScreen 임포트
+import 'set_calendar.dart'; // CalendarScreen 임포트
+import 'profile.dart'; // ProfileScreen 임포트
 
 // 앱의 시작점 (엔트리 포인트)
 void main() async {
   // Flutter 바인딩 초기화 보장
   WidgetsFlutterBinding.ensureInitialized();
-  // wish.dart에 있던 한국 로케일 초기화 코드를 여기로 이동
-  await initializeDateFormatting('ko_KR', null);
 
-  runApp(const MyApp());
+  try {
+    await dotenv.load(fileName: ".env");
+    await initializeDateFormatting('ko_KR', null);
+    await initializeFirebase();
+    runApp(const MyApp());
+  } catch (e) {
+    runApp(
+      MaterialApp(
+        home: Scaffold(
+          body: Center(
+            child: Text(
+              '앱 초기화 실패: $e\n.env 파일과 Firebase 설정을 확인하세요.',
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: Colors.red),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 // 앱의 최상위 위젯 (테마, 홈 화면 설정)
@@ -26,7 +48,7 @@ class MyApp extends StatelessWidget {
       theme: ThemeData(
         primarySwatch: Colors.blue,
         scaffoldBackgroundColor: Colors.white,
-        fontFamily: 'Pretendard', // TODO: 폰트 파일 추가 시 주석 해제
+        fontFamily: 'Pretendard',
 
         // 공통 버튼 테마
         elevatedButtonTheme: ElevatedButtonThemeData(
@@ -58,13 +80,29 @@ class MyApp extends StatelessWidget {
         ),
       ),
 
-      // 첫 화면으로 'LoginPage'를 지정
-      home: const LoginPage(),
+      // ⚠️ [수정] Firebase 인증 상태에 따른 초기 화면 결정
+      home: StreamBuilder<User?>(
+        stream: FirebaseAuth.instance.authStateChanges(),
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const Scaffold(body: Center(child: CircularProgressIndicator()));
+          }
+          if (snapshot.hasData && snapshot.data != null && !snapshot.data!.isAnonymous) {
+            // 로그인된 사용자가 있을 경우 GoalSettingScreen으로 이동
+            return const GoalSettingScreen(); // ⚠️ GoalSettingScreen (wish.dart)으로 바로 이동
+          }
+          return const LoginPage();
+        },
+      ),
 
-      // 페이지 이동 경로 설정
+      // 페이지 이동 경로 설정 (전체 앱 라우팅 통합)
       routes: {
+        '/login': (context) => const LoginPage(),
         '/signup': (context) => const SignUpPage(),
-        '/goal': (context) => const GoalSettingScreen(), // wish.dart의 화면
+        '/goal': (context) => const GoalSettingScreen(),
+        '/schedule': (context) => const ScheduleScreen(),
+        '/calendar': (context) => const CalendarScreen(),
+        '/profile': (context) => const ProfileScreen(),
       },
     );
   }
@@ -79,10 +117,77 @@ class LoginPage extends StatefulWidget {
 }
 
 class _LoginPageState extends State<LoginPage> {
+  final _emailController = TextEditingController(); // ⚠️ [추가]
+  final _passwordController = TextEditingController(); // ⚠️ [추가]
   bool _isPasswordVisible = false;
-  // bool _isGoogleLoading = false; // <-- 삭제됨
+  bool _isLoading = false; // ⚠️ [추가]
 
-  // Future<void> _handleGoogleSignIn() async { ... } // <-- 구글 로그인 함수 전체 삭제됨
+  @override
+  void dispose() {
+    _emailController.dispose();
+    _passwordController.dispose();
+    super.dispose();
+  }
+
+  // ⚠️ [수정] 로그인 로직 (성공 시 /goal로 이동)
+  Future<void> _login() async {
+    if (_emailController.text.isEmpty || _passwordController.text.isEmpty) {
+      _showErrorSnackbar('이메일과 비밀번호를 모두 입력해주세요.');
+      return;
+    }
+
+    setState(() {
+      _isLoading = true;
+    });
+
+    try {
+      await FirebaseAuth.instance.signInWithEmailAndPassword(
+        email: _emailController.text.trim(),
+        password: _passwordController.text.trim(),
+      );
+
+      // 로그인 성공 시 StreamBuilder가 감지하여 자동으로 GoalSettingScreen으로 이동
+
+    } on FirebaseAuthException catch (e) {
+      String errorMessage = _getAuthErrorMessage(e.code);
+      _showErrorSnackbar(errorMessage);
+    } catch (e) {
+      _showErrorSnackbar('로그인 중 알 수 없는 오류가 발생했습니다: $e');
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
+    }
+  }
+
+  String _getAuthErrorMessage(String errorCode) {
+    switch (errorCode) {
+      case 'user-not-found':
+        return '등록되지 않은 이메일입니다.';
+      case 'wrong-password':
+        return '비밀번호가 일치하지 않습니다.';
+      case 'invalid-email':
+        return '유효하지 않은 이메일 형식입니다.';
+      case 'user-disabled':
+        return '사용자 계정이 비활성화되었습니다.';
+      default:
+        return '로그인에 실패했습니다. (오류 코드: $errorCode)';
+    }
+  }
+
+  void _showErrorSnackbar(String message) {
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(message),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+
 
   @override
   Widget build(BuildContext context) {
@@ -118,7 +223,7 @@ class _LoginPageState extends State<LoginPage> {
               const SizedBox(height: 24),
 
               // 타이틀
-              Text(
+              const Text(
                 '로그인',
                 textAlign: TextAlign.center,
                 style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
@@ -132,9 +237,14 @@ class _LoginPageState extends State<LoginPage> {
               const SizedBox(height: 32),
 
               // 폼 필드
-              _buildTextField(label: '이메일 또는 전화번호', hint: 'test@gmail.com'),
+              _buildTextField(
+                  controller: _emailController, // ⚠️ [수정] 컨트롤러 연결
+                  label: '이메일 또는 전화번호',
+                  hint: 'test@gmail.com'
+              ),
               const SizedBox(height: 16),
               _buildTextField(
+                controller: _passwordController, // ⚠️ [수정] 컨트롤러 연결
                 label: '비밀번호',
                 hint: '********',
                 isPassword: true,
@@ -165,17 +275,15 @@ class _LoginPageState extends State<LoginPage> {
 
               // 일반 로그인 버튼
               ElevatedButton(
-                onPressed: () {
-                  // TODO: 일반 로그인 ID/PW 검증 로직
-                  Navigator.pushReplacementNamed(context, '/goal');
-                },
-                child: Text('로그인'),
+                onPressed: _isLoading ? null : _login, // ⚠️ [수정] 로그인 로직 연결
+                child: _isLoading
+                    ? const SizedBox(
+                  height: 24,
+                  width: 24,
+                  child: CircularProgressIndicator(color: Colors.white),
+                )
+                    : const Text('로그인'),
               ),
-
-              // const SizedBox(height: 24), <-- "Or" 구분선과 함께 삭제됨
-              // Row( ... "Or" 구분선 ... ),  <-- 삭제됨
-              // const SizedBox(height: 24), <-- 구글 로그인 버튼과 함께 삭제됨
-              // OutlinedButton.icon( ... ), <-- 구글 로그인 버튼 삭제됨
 
               const SizedBox(height: 32), // 로그인 버튼과 회원가입 링크 사이의 간격
 
@@ -201,6 +309,7 @@ class _LoginPageState extends State<LoginPage> {
 
   // 텍스트 필드를 만드는 공통 헬퍼 위젯
   Widget _buildTextField({
+    TextEditingController? controller, // ⚠️ [추가] 컨트롤러 인자
     required String label,
     required String hint,
     bool isPassword = false,
@@ -219,6 +328,7 @@ class _LoginPageState extends State<LoginPage> {
         ),
         const SizedBox(height: 8),
         TextField(
+          controller: controller, // ⚠️ [수정] 컨트롤러 연결
           obscureText: isPassword && !isPasswordVisible,
           decoration: InputDecoration(
             hintText: hint,
@@ -237,4 +347,3 @@ class _LoginPageState extends State<LoginPage> {
     );
   }
 }
-
